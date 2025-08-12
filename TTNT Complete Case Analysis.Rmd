@@ -1,0 +1,2719 @@
+---
+title: "complete case analysis - os"
+author: "rose han"
+date: "2024-06-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+ttnt_data <- read.csv("cr_ttnt_data_combined.csv")
+ttnt_data <-  ttnt_data %>% mutate(combined_race_ethnicity = factor(combined_race_ethnicity,
+                                            levels = c("White", 
+                                                       "African American",
+                                                       "Asian",
+                                                       "Hispanic or Latino",
+                                                       "Other Races",
+                                                       "Unknown/Missing")))
+ttnt_data <- ttnt_data %>% select("combined_race_ethnicity", "gender", "age_group", "combined_ecog", "issstage", "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", "hemoglobin","marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy","TTNT_months","fstatus_combined")
+
+vars <- c( "gender", "age_group", "combined_ecog", "issstage", "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", "hemoglobin","marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy")
+
+# Assume new_dat is your data frame
+ttnt_data$combined_ecog <- as.factor(ttnt_data$combined_ecog)
+ttnt_data$combined_ecog <- relevel(ttnt_data$combined_ecog , ref = "0-1" )
+ttnt_data$sesindex2015_2019 <- as.factor(ttnt_data$sesindex2015_2019)
+ttnt_data$hemoglobin <- as.factor(ttnt_data$hemoglobin)
+ttnt_data$marker_calcium_result <- as.factor(ttnt_data$marker_calcium_result)
+ttnt_data$marker_creatinie_result <- as.factor(ttnt_data$marker_creatinie_result)
+# ttnt_data$lightchainkappa <- as.factor(ttnt_data$lightchainkappa)
+# ttnt_data$lightchainlambda <- as.factor(ttnt_data$lightchainlambda)
+ttnt_data$practicetype <- as.factor(ttnt_data$practicetype)
+# ttnt_data$mproteinigg <- as.factor(ttnt_data$mproteinigg)
+
+counts <- ttnt_data %>%
+  group_by(combined_race_ethnicity) %>%
+  summarise(count = n()); counts
+```
+
+## AFRICAN AMERICAN
+### Crude
+```{r}
+# match each race/ethnicity group separately
+aa_data <- ttnt_data %>% filter(combined_race_ethnicity %in% c("White", "African American" ))
+aa_data <- aa_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+
+counts <- aa_data %>%
+  group_by(combined_race_ethnicity) %>%
+  summarise(count = n()); counts
+
+# results 
+crude <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data)
+a  <- summary(crude)
+
+crude_results <- data.frame( Variable = "as.factor(treatment)1", 
+                             HR = exp(coef(a)[1]), 
+                             Lower_CI = exp(confint(crude)["as.factor(treatment)1", 1]), 
+                             Upper_CI = exp(confint(crude)["as.factor(treatment)1", 2]), 
+                             p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(crude_results) 
+```
+```{r}
+# data2 <- read.csv("cr_ttnt_data_combined.csv")
+# # match each race/ethnicity group separately
+# aa_data <- data2 %>% filter(combined_race_ethnicity %in% c("White", "African American" ))
+# aa_data <- aa_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+# 
+# counts <- aa_data %>%
+#   group_by(combined_race_ethnicity) %>%
+#   summarise(count = n()); counts
+# 
+# # results 
+# crude <-coxph(Surv(TTNT_days, fstatus_combined_combined ) ~ as.factor(treatment), data = aa_data)
+# a  <- summary(crude)
+# 
+# crude_results <- data.frame( Variable = "as.factor(treatment)1", 
+#                              HR = exp(coef(a)[1]), 
+#                              Lower_CI = exp(confint(crude)["as.factor(treatment)1", 1]), 
+#                              Upper_CI = exp(confint(crude)["as.factor(treatment)1", 2]), 
+#                              p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# # Print results 
+# print(crude_results) 
+```
+###Covariate adjustment 
+```{r}
+# results 
+covariate_adj <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy, data = aa_data)
+a <- summary(covariate_adj)
+a
+# cov_adj_results <- data.frame( Variable = "as.factor(treatment)1", HR = coef(a), Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI, P-value = )
+# print(crude_results)
+
+# Extract HR, confidence intervals, and p-values for the treatment variable 
+cov_adj_results <- data.frame(Variable = "as.factor(treatment)1", 
+                              HR = exp(coef(a)[1]), 
+                              Lower_CI = exp(confint(covariate_adj)["as.factor(treatment)1", 1]), 
+                              Upper_CI = exp(confint(covariate_adj)["as.factor(treatment)1", 2]), 
+                              p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(cov_adj_results) 
+```
+
+### PS Matching
+#### Nearest neighbor matching 
+
+```{r}
+# PS score calculation
+aa_data$gender <- as.factor(aa_data$gender)
+aa_data$treatment<- as.factor(aa_data$treatment)
+ps_model <- glm(treatment ~ age_group +
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+              aa_data, family = binomial())
+aa_data$pscore <- predict(ps_model, type="response")
+#######################################################################################################
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "nearest", 
+               distance = "glm")
+
+match.data_nn <- match.data(ps_model_nn)
+
+
+# original PS score distribution before matching 
+ggplot(aa_data, aes(x = pscore, fill = factor(treatment)))+
+  geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_nn)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_1 <- knitr::kable(table1_df,
+      caption = "Table 1: Comparison of Demographics - White vs. African American")
+aa_table1_1
+```
+
+```{r}
+library(survival)
+# ps matching (optimal) results
+nn_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_nn)
+a <- summary(nn_match)
+
+nn_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), 
+                          Lower_CI = exp(confint(nn_match)["as.factor(treatment)1", 1]), 
+                          Upper_CI = exp(confint(nn_match)["as.factor(treatment)1", 2]), 
+                          p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(nn_results)
+```
+
+#### Nerest Neighbor matching (caliper width = 0.2)
+```{r}
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "nearest", 
+               caliper = 0.1,
+               distance = "glm")
+
+match.data_caliper <- match.data(ps_model_nn)
+
+# original PS score distribution before matching 
+# ggplot(dat, aes(x = pscore, fill = factor(treatment)))+
+#   geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_caliper)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_2 <- knitr::kable(table1_df)
+aa_table1_2
+```
+
+```{r}
+library(survival)
+#  results
+nn_caliper_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_caliper)
+a <- summary(nn_caliper_match)
+
+nn_0.2_results <- data.frame( Variable = "as.factor(treatment)1", 
+                              HR = exp(coef(a)[1]), 
+                              Lower_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 1]), 
+                              Upper_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(nn_0.2_results)
+```
+#### Optimal matching 
+```{r}
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "optimal",
+               distance = "glm")
+
+match.data_optimal <- match.data(ps_model_nn)
+
+# original PS score distribution before matching 
+# ggplot(dat, aes(x = pscore, fill = factor(treatment)))+
+#   geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_optimal)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_2 <- knitr::kable(table1_df)
+aa_table1_2
+```
+
+```{r}
+library(survival)
+# ps matching (optimal) results
+nn_caliper_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_optimal)
+a <- summary(nn_caliper_match)
+
+optimal_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), 
+                               Lower_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(optimal_results)
+```
+### IPTW (with trimming)
+```{r}
+# calculate IPTW weights
+aa_data$weightss <- ifelse(aa_data$treatment == 1, 1/aa_data$pscore, 1/(1-aa_data$pscore))
+# apply trimming to weights
+lower_threshold <- quantile(aa_data$weightss,0.05)
+upper_threshold <- quantile(aa_data$weightss,0.95)
+aa_data_trimmed <- aa_data %>% filter(weightss >=lower_threshold & 
+                                        weightss <= upper_threshold)
+
+design <- svydesign(ids = ~1, data =aa_data, weights = ~ weightss)
+table_sw_1<- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+
+cox_model_trimmed_2<- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data_trimmed, weights = weightss)
+a <- summary(cox_model_trimmed_2)
+
+iptw_trimming_results<- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(cox_model_trimmed_2)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(cox_model_trimmed_2)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 6] ) 
+# Print results 
+print(iptw_trimming_results)
+
+```
+
+### Stablized IPTW
+```{r}
+library(survey)
+p_exposure <- mean(aa_data$treatment==1)
+p_non_exposure <- 1-p_exposure
+
+aa_data$ps_weights_3 <- ifelse(aa_data$treatment == 1, p_exposure/aa_data$pscore, p_non_exposure/(1-aa_data$pscore))
+
+design_1 <- svydesign(ids = ~1, data =aa_data, weights = ~ ps_weights_3)
+table_sw<- svyCreateTableOne( vars =  vars, strata = "treatment", data = design_1, test =FALSE, addOverall = TRUE)
+print(table_sw,smd=TRUE)
+
+# check weight distribution
+summary(aa_data$ps_weights_3)
+# check for extreme weights
+quantile(aa_data$ps_weights_3, probs = c(0,0.1,0.05,0.95,0.99,1))
+
+# histogram
+ggplot(aa_data, 
+       aes(x = ps_weights_3, fill = factor(treatment))) +
+  geom_histogram(binwidth = 0.05, alpha = 0.5, position = "identity") + 
+  labs(title = "histogram of stablized iptw",
+       x = "stablized iptw",
+       fill = "race/ethnicity") + theme_minimal()
+ggplot(aa_data, 
+       aes(x = ps_weights_3, fill = factor(treatment))) +
+  geom_density(alpha = 0.5) + 
+  labs(title = "histogram of stablized iptw",
+       x = "stablized iptw",
+       fill = "race/ethnicity") + theme_minimal()
+
+cox_model<- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data, weights = ps_weights_3)
+a <- summary(cox_model)
+
+stablized_iptw_results<- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(cox_model)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(cox_model)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 6] ) 
+# Print results 
+print(stablized_iptw_results)
+```
+
+### PS Stratification - 5 strata
+```{r}
+
+# equal number (approx.)
+aa_data <- aa_data %>% mutate(
+  stratum = ntile(pscore,5)
+)
+
+table(aa_data$stratum)
+
+# summarize propensity scores within each stratum
+aa_data %>% group_by(stratum) %>% 
+  summarise(min_score = min(pscore),
+            max_score = max(pscore),
+            n = n())
+
+# visualize the propensity score distribution by strata
+library(ggplot2)
+ggplot(aa_data, aes(x = factor(stratum),
+                    y = pscore,
+                    fill = factor(stratum))) +
+  geom_boxplot() + labs(title = "PS distribution by stratum",
+                        x = "stratum",
+                        y = "ps") + theme_minimal()
+
+# calculate outcomes within each stratum
+stratum_results <- list()
+
+for(s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum = s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  stratum_results[[s]] <- summary(cox_model)
+}
+
+stratum_results
+
+```
+
+
+```{r}
+stratum_effects <- data.frame(
+  stratum = numeric(),
+  log_hr = numeric(),
+  var_log_hr = numeric(),
+  n_treated = numeric(),
+  n_control = numeric()
+)
+
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum == s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  
+  log_hr <- summary(cox_model)$coefficients[1]
+  se_log_hr <- summary(cox_model)$coefficients[3]
+  
+  hr <- exp(log_hr)
+  ci_lower <- exp(log_hr - 1.96*se_log_hr)
+  ci_upper <- exp(log_hr + 1.96*se_log_hr)
+  
+  n_treated <- nrow(subset(stratum_data, treatment == 1))
+  n_control <- nrow(subset(stratum_data, treatment == 0))
+  
+  stratum_effects <- rbind(
+    stratum_effects,
+    data.frame(stratum =s,
+              HR = hr,
+              log_hr = log_hr,
+              se_log_hr = se_log_hr,
+              var_log_hr = se_log_hr^2,
+              CI_lower = ci_lower,
+              CI_upper = ci_upper,
+              n_treated = n_treated,
+              n_control = n_control
+  ))
+}
+
+print(stratum_effects)
+# weighted HR for ATE
+total_population <- sum(stratum_effects$n_treated + stratum_effects$n_control)
+stratum_effects <- stratum_effects %>%
+  mutate(weight = (n_treated + n_control)/total_population)
+
+
+stratum_effects <- stratum_effects %>%
+
+  mutate(weight = 0.2)
+
+# Weighted log HR and variance for ATT
+
+weighted_log_hr <- sum(stratum_effects$log_hr * stratum_effects$weight)
+
+weighted_var_log_hr <- sum(stratum_effects$var_log_hr * stratum_effects$weight^2)
+
+# Convert to HR and confidence intervals
+
+ate_hr <- exp(weighted_log_hr)
+
+ate_ci_lower <- exp(weighted_log_hr - 1.96 * sqrt(weighted_var_log_hr))
+
+ate_ci_upper <- exp(weighted_log_hr + 1.96 * sqrt(weighted_var_log_hr))
+
+# Print ATT HR and confidence intervals
+
+list(ATE_HR = ate_hr, CI_lower = ate_ci_lower, CI_upper = ate_ci_upper)
+
+final_ate_results <- data.frame(HR = ate_hr, 
+                                Lower_CI = ate_ci_lower,
+                                Upper_CI = ate_ci_upper) %>% mutate(Variable = "as.factor(treatment)1")%>% mutate(p_value = NA)
+
+
+
+# Add weights based on the treated population in each stratum
+
+total_treated <- sum(stratum_effects$n_treated)
+
+stratum_effects <- stratum_effects %>%
+
+  mutate(weight = n_treated / total_treated)
+
+# Weighted log HR and variance for ATT
+
+weighted_log_hr <- sum(stratum_effects$log_hr * stratum_effects$weight)
+
+weighted_var_log_hr <- sum(stratum_effects$var_log_hr * stratum_effects$weight^2)
+
+# Convert to HR and confidence intervals
+
+att_hr <- exp(weighted_log_hr)
+
+att_ci_lower <- exp(weighted_log_hr - 1.96 * sqrt(weighted_var_log_hr))
+
+att_ci_upper <- exp(weighted_log_hr + 1.96 * sqrt(weighted_var_log_hr))
+
+# Print ATT HR and confidence intervals
+
+list(ATT_HR = att_hr, CI_lower = att_ci_lower, CI_upper = att_ci_upper)
+
+final_att_results <- data.frame(HR = att_hr, 
+                                Lower_CI = att_ci_lower,
+                                Upper_CI = att_ci_upper) %>% mutate(Variable = "as.factor(treatment)1") %>% mutate(p_value = NA)
+
+```
+
+```{r}
+stratum_sizes <- aa_data %>%
+  group_by(stratum) %>% summarise(n=n())
+
+smd_results <- aa_data %>%
+  group_by(stratum) %>%
+  summarise(
+    smd_list = list(CreateTableOne(vars = vars,
+                                   strata = "treatment",
+                                   data = cur_data(), test = FALSE) %>% ExtractSmd()
+  )) %>% unnest_wider(smd_list)
+
+
+weighted_smd <- smd_results %>%
+  inner_join(stratum_sizes, by = "stratum") %>%
+  mutate(weight = n/sum(n))
+
+weighted_smd_summary <- weighted_smd %>%
+  summarise(across(where(is.numeric), ~sum(.x*weight, na.rm = TRUE)))
+
+weighted_smd_summary <- weighted_smd_summary %>% select(-n,-weight,-stratum)
+```
+
+
+```{r}
+# check PH assumptions
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum ==s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  print(cox.zph(cox_model))
+}
+
+# covariate balance in each stratum
+
+stratum_smds <- data.frame(stratum = numeric(),
+                           covariate = character(),
+                           smd = numeric(),
+                           n = numeric())
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum ==s)
+  table1 <- CreateTableOne(vars = vars, strata = "treatment", data = stratum_data)
+  smd<- ExtractSmd(table1)
+  stratum_smds <- rbind(stratum_smds,
+                        data.frame(stratum = s,
+                                   variable = vars,
+                                   smd = smd,
+                                   n = nrow(stratum_data)
+                                   ))
+  }
+
+print(stratum_smds)
+
+weighted_smds <- stratum_smds %>% group_by(variable) %>%
+  summarise(weighted_smd = sum(`X1.vs.2`*n)/sum(n))
+
+weighted_smds
+
+# generating proprotions 
+library(dplyr)
+proportions_by_variable <- stratum_smds%>%
+  group_by(variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+```
+
+### PS as an additional covariate 
+
+```{r}
+doubly_robust <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy + pscore, data = aa_data)
+a<- summary(doubly_robust)
+
+doubly_robust_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(doubly_robust)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(doubly_robust)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(doubly_robust_results)
+```
+
+### Covariate Balance Check 
+
+```{r}
+# Unmatched 
+table_unmatched <- CreateTableOne(vars = vars, strata = "treatment", data = aa_data, test = TRUE, 
+                                  addOverall = TRUE ) 
+# nearest neighbor
+table_nn <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_nn)
+
+## caliper 
+table_caliper <-  CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_caliper)
+
+## optimal 
+table_optimal <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_optimal)
+
+## iptw_with_trimming
+table_iptw_trimming <- table_sw_1
+## stablized iptw
+table_iptw_stablized <- table_sw
+
+```
+
+```{r}
+## Construct a data frame containing variable name and SMD from all methods
+dataPlot <- data.frame(variable   = rownames(ExtractSmd(table_unmatched)),
+                       Unmatched  = as.numeric(ExtractSmd(table_unmatched)),
+                       Matched_optimal  = as.numeric(ExtractSmd(tabMatched_optimal)),
+                       Matched_caliper_0.1  = as.numeric(ExtractSmd(table_caliper)),
+                       Matched_nearest = as.numeric(ExtractSmd(table_iptw_trimming)),
+                       iptw_trimming = as.numeric(ExtractSmd(table_nn)),
+                       iptw_stabilized= as.numeric(ExtractSmd(table_iptw_stablized)),
+                       ps_stratification = as.numeric(weighted_smd_summary)
+                       )
+
+## Create long-format data for ggplot2
+dataPlotMelt <- melt(data          = dataPlot,
+                     id.vars       = c("variable"),
+                     variable.name = "Method",
+                     value.name    = "SMD")
+
+## Order variable names by magnitude of SMD
+varNames <- as.character(dataPlot$variable)[order(dataPlot$Unmatched)]
+
+## Order factor levels in the same order
+dataPlotMelt$variable <- factor(dataPlotMelt$variable,
+                                levels = varNames)
+
+## Plot using ggplot2
+ggplot(data = dataPlotMelt,
+       mapping = aes(x = variable, y = SMD, group = Method, color = Method)) +
+    geom_line() +
+    geom_point() +
+    geom_hline(yintercept = 0.1, color = "black", size = 0.1) +
+    coord_flip() +
+    theme_bw() +
+    theme(legend.key = element_blank())
+```
+
+### Results
+
+####Table
+
+```{r}
+library(dplyr) 
+library(purrr) 
+
+# Function to extract and combine treatment effect results 
+aggregate_treatment_results <- function(results_list, method_names, treatment_var = "as.factor(treatment)1") 
+{ 
+  # Add method names to each dataframe 
+  named_results <- map2(results_list, method_names, ~mutate(.x, Method = .y)) 
+  # Combine all results into one dataframe 
+  combined_results <- bind_rows(named_results) 
+  # Filter for the treatment variable only 
+  treatment_results <- combined_results %>% 
+    filter(Variable == treatment_var) %>% select(Method, Variable, HR, Lower_CI, Upper_CI, p_value) %>% rename( Hazard_Ratio = HR)
+  return(treatment_results) }
+
+```
+
+```{r}
+# List of results from different PS methods 
+results_list <- list(crude_results, 
+                     cov_adj_results, 
+                     nn_results,
+                     nn_0.2_results,
+                     optimal_results,
+                     iptw_trimming_results,
+                     stablized_iptw_results,
+                   #  final_att_results,
+                     final_ate_results,
+                     doubly_robust_results
+                     ) 
+method_names <- c("Crude", 
+                  "Covariate Adjustment", 
+                  "NNM",
+                  "NNM (caliper width = 0.2)",
+                  "Optimal Matching",
+                 "IPTW (5% trimming)",
+                  "Stablized IPTW",
+                 #"PS Stratification (5 strata) - ATT",
+                   "PS Stratification (5 strata)",
+                  "PS as Covariate"
+                  )
+
+
+a <- aggregate_treatment_results(results_list, method_names)
+a <- a %>% select(Method,Hazard_Ratio, Lower_CI, Upper_CI, p_value);
+rownames(a) <- NULL
+print(a)
+
+b <- a
+b$Hazard_Ratio <- round(b$Hazard_Ratio,2)
+b$Lower_CI <- round(b$Lower_CI,2)
+b$Upper_CI <- round(b$Upper_CI,2)
+print(b)
+
+write.csv(a, "African American_complete_data_results_ttnt.csv", row.names = FALSE)
+```
+#### Forest Plot
+```{r}
+# Define the desired order manually
+desired_order <- c("Doubly Robust (PS as a covariate)",
+                   "PS Stratification (5 strata) - ATE",
+                   "PS Stratification (5 strata) - ATT",
+                   "Stablized IPTW",
+                   "IPTW (with trimming)",
+                    "Optimal Matching",
+                   "Nerest Neighbor Matching (caliper width = 0.2)",
+                    "Nerest Neighbor Matching",
+                    "Covariate Adjustment",
+                   "Crude")
+
+# Convert Method column to factor with specified order
+a$Method <- factor(a$Method, levels = desired_order)
+
+ggplot(a,  aes(y = Method, x = Hazard_Ratio)) + geom_point(size = 3, color = "blue") + # Plot HR 
+  geom_errorbarh(aes(xmin = Lower_CI, xmax = Upper_CI), height = 0.2) + # CI lines 
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") + # Reference line at HR = 1 
+  labs(title = "Race/Ethnicity Hazard Ratios with 95% CI", x = "Hazard Ratio", y = "Method") + theme_minimal()
+```
+
+## ASIAN
+
+### Crude
+```{r}
+# match each race/ethnicity group separately
+aa_data <- ttnt_data %>% filter(combined_race_ethnicity %in% c("White", "Asian" ))
+aa_data <- aa_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+
+counts <- aa_data %>%
+  group_by(combined_race_ethnicity) %>%
+  summarise(count = n()); counts
+
+# results 
+crude <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data)
+a  <- summary(crude)
+
+crude_results <- data.frame( Variable = "as.factor(treatment)1", 
+                             HR = exp(coef(a)[1]), 
+                             Lower_CI = exp(confint(crude)["as.factor(treatment)1", 1]), 
+                             Upper_CI = exp(confint(crude)["as.factor(treatment)1", 2]), 
+                             p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(crude_results) 
+```
+```{r}
+# data2 <- read.csv("cr_ttnt_data_combined.csv")
+# # match each race/ethnicity group separately
+# aa_data <- data2 %>% filter(combined_race_ethnicity %in% c("White", "Asian" ))
+# aa_data <- aa_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+# 
+# counts <- aa_data %>%
+#   group_by(combined_race_ethnicity) %>%
+#   summarise(count = n()); counts
+# 
+# # results 
+# crude <-coxph(Surv(TTNT_days, fstatus_combined_combined ) ~ as.factor(treatment), data = aa_data)
+# a  <- summary(crude)
+# 
+# crude_results <- data.frame( Variable = "as.factor(treatment)1", 
+#                              HR = exp(coef(a)[1]), 
+#                              Lower_CI = exp(confint(crude)["as.factor(treatment)1", 1]), 
+#                              Upper_CI = exp(confint(crude)["as.factor(treatment)1", 2]), 
+#                              p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# # Print results 
+# print(crude_results) 
+```
+
+###Covariate adjustment 
+```{r}
+# results 
+covariate_adj <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy, data = aa_data)
+a <- summary(covariate_adj)
+a
+# cov_adj_results <- data.frame( Variable = "as.factor(treatment)1", HR = coef(a), Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI, P-value = )
+# print(crude_results)
+
+# Extract HR, confidence intervals, and p-values for the treatment variable 
+cov_adj_results <- data.frame(Variable = "as.factor(treatment)1", 
+                              HR = exp(coef(a)[1]), 
+                              Lower_CI = exp(confint(covariate_adj)["as.factor(treatment)1", 1]), 
+                              Upper_CI = exp(confint(covariate_adj)["as.factor(treatment)1", 2]), 
+                              p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(cov_adj_results) 
+```
+
+### PS Matching
+#### Nearest neighbor matching 
+
+```{r}
+# PS score calculation
+aa_data$gender <- as.factor(aa_data$gender)
+aa_data$treatment<- as.factor(aa_data$treatment)
+ps_model <- glm(treatment ~ age_group +
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+              aa_data, family = binomial())
+aa_data$pscore <- predict(ps_model, type="response")
+#######################################################################################################
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "nearest", 
+               distance = "glm")
+
+match.data_nn <- match.data(ps_model_nn)
+
+
+# original PS score distribution before matching 
+ggplot(aa_data, aes(x = pscore, fill = factor(treatment)))+
+  geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_nn)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_1 <- knitr::kable(table1_df,
+      caption = "Table 1: Comparison of Demographics - White vs. African American")
+aa_table1_1
+```
+
+```{r}
+library(survival)
+# ps matching (optimal) results
+nn_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_nn)
+a <- summary(nn_match)
+
+nn_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), 
+                          Lower_CI = exp(confint(nn_match)["as.factor(treatment)1", 1]), 
+                          Upper_CI = exp(confint(nn_match)["as.factor(treatment)1", 2]), 
+                          p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(nn_results)
+```
+
+#### Nerest Neighbor matching (caliper width = 0.2)
+```{r}
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "nearest", 
+               caliper = 0.1,
+               distance = "glm")
+
+match.data_caliper <- match.data(ps_model_nn)
+
+# original PS score distribution before matching 
+# ggplot(dat, aes(x = pscore, fill = factor(treatment)))+
+#   geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_caliper)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_2 <- knitr::kable(table1_df)
+aa_table1_2
+```
+
+```{r}
+library(survival)
+#  results
+nn_caliper_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_caliper)
+a <- summary(nn_caliper_match)
+
+nn_0.2_results <- data.frame( Variable = "as.factor(treatment)1", 
+                              HR = exp(coef(a)[1]), 
+                              Lower_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 1]), 
+                              Upper_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(nn_0.2_results)
+```
+#### Optimal matching 
+```{r}
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "optimal",
+               distance = "glm")
+
+match.data_optimal <- match.data(ps_model_nn)
+
+# original PS score distribution before matching 
+# ggplot(dat, aes(x = pscore, fill = factor(treatment)))+
+#   geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_optimal)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_2 <- knitr::kable(table1_df)
+aa_table1_2
+```
+
+```{r}
+library(survival)
+# ps matching (optimal) results
+nn_caliper_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_optimal)
+a <- summary(nn_caliper_match)
+
+optimal_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), 
+                               Lower_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(optimal_results)
+```
+### IPTW (with trimming) 
+```{r}
+# calculate IPTW weights
+aa_data$weightss <- ifelse(aa_data$treatment == 1, 1/aa_data$pscore, 1/(1-aa_data$pscore))
+# apply trimming to weights
+lower_threshold <- quantile(aa_data$weightss,0.05)
+upper_threshold <- quantile(aa_data$weightss,0.95)
+aa_data_trimmed <- aa_data %>% filter(weightss >=lower_threshold & 
+                                        weightss <= upper_threshold)
+
+design <- svydesign(ids = ~1, data =aa_data, weights = ~ weightss)
+table_sw_1<- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+
+cox_model_trimmed_2<- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data_trimmed, weights = weightss)
+a <- summary(cox_model_trimmed_2)
+
+# iptw_trimming_results_2<- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(cox_model_trimmed_2)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(cox_model_trimmed_2)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 6] ) 
+# # Print results 
+# print(iptw_trimming_results_2)
+
+```
+
+### Stablized IPTW
+```{r}
+library(survey)
+p_exposure <- mean(aa_data$treatment==1)
+p_non_exposure <- 1-p_exposure
+
+aa_data$ps_weights_3 <- ifelse(aa_data$treatment == 1, p_exposure/aa_data$pscore, p_non_exposure/(1-aa_data$pscore))
+
+design_1 <- svydesign(ids = ~1, data =aa_data, weights = ~ ps_weights_3)
+table_sw<- svyCreateTableOne( vars =  vars, strata = "treatment", data = design_1, test =FALSE, addOverall = TRUE)
+print(table_sw,smd=TRUE)
+
+# check weight distribution
+summary(aa_data$ps_weights_3)
+# check for extreme weights
+quantile(aa_data$ps_weights_3, probs = c(0,0.1,0.05,0.95,0.99,1))
+
+# histogram
+ggplot(aa_data, 
+       aes(x = ps_weights_3, fill = factor(treatment))) +
+  geom_histogram(binwidth = 0.05, alpha = 0.5, position = "identity") + 
+  labs(title = "histogram of stablized iptw",
+       x = "stablized iptw",
+       fill = "race/ethnicity") + theme_minimal()
+ggplot(aa_data, 
+       aes(x = ps_weights_3, fill = factor(treatment))) +
+  geom_density(alpha = 0.5) + 
+  labs(title = "histogram of stablized iptw",
+       x = "stablized iptw",
+       fill = "race/ethnicity") + theme_minimal()
+
+cox_model<- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data, weights = ps_weights_3)
+a <- summary(cox_model)
+
+stablized_iptw_results<- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(cox_model)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(cox_model)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 6] ) 
+# Print results 
+print(stablized_iptw_results)
+```
+
+### PS Stratification - 5 strata
+```{r}
+
+# equal number (approx.)
+aa_data <- aa_data %>% mutate(
+  stratum = ntile(pscore,5)
+)
+
+table(aa_data$stratum)
+
+# summarize propensity scores within each stratum
+aa_data %>% group_by(stratum) %>% 
+  summarise(min_score = min(pscore),
+            max_score = max(pscore),
+            n = n())
+
+# visualize the propensity score distribution by strata
+library(ggplot2)
+ggplot(aa_data, aes(x = factor(stratum),
+                    y = pscore,
+                    fill = factor(stratum))) +
+  geom_boxplot() + labs(title = "PS distribution by stratum",
+                        x = "stratum",
+                        y = "ps") + theme_minimal()
+
+# calculate outcomes within each stratum
+stratum_results <- list()
+
+for(s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum = s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  stratum_results[[s]] <- summary(cox_model)
+}
+
+stratum_results
+
+```
+
+
+```{r}
+stratum_effects <- data.frame(
+  stratum = numeric(),
+  log_hr = numeric(),
+  var_log_hr = numeric(),
+  n_treated = numeric(),
+  n_control = numeric()
+)
+
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum == s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  
+  log_hr <- summary(cox_model)$coefficients[1]
+  se_log_hr <- summary(cox_model)$coefficients[3]
+  
+  hr <- exp(log_hr)
+  ci_lower <- exp(log_hr - 1.96*se_log_hr)
+  ci_upper <- exp(log_hr + 1.96*se_log_hr)
+  
+  n_treated <- nrow(subset(stratum_data, treatment == 1))
+  n_control <- nrow(subset(stratum_data, treatment == 0))
+  
+  stratum_effects <- rbind(
+    stratum_effects,
+    data.frame(stratum =s,
+              HR = hr,
+              log_hr = log_hr,
+              se_log_hr = se_log_hr,
+              var_log_hr = se_log_hr^2,
+              CI_lower = ci_lower,
+              CI_upper = ci_upper,
+              n_treated = n_treated,
+              n_control = n_control
+  ))
+}
+
+print(stratum_effects)
+
+# stratum_effects <- stratum_effects %>% filter(stratum !=2)
+
+# weighted HR for ATE
+total_population <- sum(stratum_effects$n_treated + stratum_effects$n_control)
+stratum_effects <- stratum_effects %>%
+  mutate(weight = (n_treated + n_control)/total_population)
+
+
+stratum_effects <- stratum_effects %>%
+
+  mutate(weight = 0.2)
+
+# Weighted log HR and variance for ATT
+
+weighted_log_hr <- sum(stratum_effects$log_hr * stratum_effects$weight)
+
+weighted_var_log_hr <- sum(stratum_effects$var_log_hr * stratum_effects$weight^2)
+
+# Convert to HR and confidence intervals
+
+ate_hr <- exp(weighted_log_hr)
+
+ate_ci_lower <- exp(weighted_log_hr - 1.96 * sqrt(weighted_var_log_hr))
+
+ate_ci_upper <- exp(weighted_log_hr + 1.96 * sqrt(weighted_var_log_hr))
+
+# Print ATT HR and confidence intervals
+
+list(ATE_HR = ate_hr, CI_lower = ate_ci_lower, CI_upper = ate_ci_upper)
+
+final_ate_results <- data.frame(HR = ate_hr, 
+                                Lower_CI = ate_ci_lower,
+                                Upper_CI = ate_ci_upper) %>% mutate(Variable = "as.factor(treatment)1")%>% mutate(p_value = NA)
+
+
+
+# Add weights based on the treated population in each stratum
+
+total_treated <- sum(stratum_effects$n_treated)
+
+stratum_effects <- stratum_effects %>%
+
+  mutate(weight = n_treated / total_treated)
+
+# Weighted log HR and variance for ATT
+
+weighted_log_hr <- sum(stratum_effects$log_hr * stratum_effects$weight)
+
+weighted_var_log_hr <- sum(stratum_effects$var_log_hr * stratum_effects$weight^2)
+
+# Convert to HR and confidence intervals
+
+att_hr <- exp(weighted_log_hr)
+
+att_ci_lower <- exp(weighted_log_hr - 1.96 * sqrt(weighted_var_log_hr))
+
+att_ci_upper <- exp(weighted_log_hr + 1.96 * sqrt(weighted_var_log_hr))
+
+# Print ATT HR and confidence intervals
+
+list(ATT_HR = att_hr, CI_lower = att_ci_lower, CI_upper = att_ci_upper)
+
+final_att_results <- data.frame(HR = att_hr, 
+                                Lower_CI = att_ci_lower,
+                                Upper_CI = att_ci_upper) %>% mutate(Variable = "as.factor(treatment)1") %>% mutate(p_value = NA)
+
+```
+```{r}
+# library(dplyr)
+# 
+# # Step 1: Subset stratum 2
+# stratum2_data <- your_full_data %>%
+# filter(stratum == 2)
+# 
+# # Step 2: Count events and censored overall
+# overall_counts <- table(stratum2_data$fstatus_combined)
+# print(overall_counts)
+# 
+# # Step 3: Count events and censored by treatment group
+# summary_by_group <- stratum2_data %>%
+# group_by(treatment, fstatus_combined) %>%
+# summarise(n = n()) %>%
+# arrange(treatment, fstatus_combined)
+# 
+# print(summary_by_group)
+# 
+# # Step 4 (optional): Create a summary table for quick viewing
+# summary_wide <- stratum2_data %>%
+# group_by(treatment, fstatus_combined) %>%
+# summarise(n = n()) %>%
+# tidyr::pivot_wider(names_from = fstatus_combined, values_from = n, values_fill = 0) %>%
+# rename(censored = `0`, event = `1`)
+# 
+# print(summary_wide)
+```
+
+```{r}
+stratum_sizes <- aa_data %>%
+  group_by(stratum) %>% summarise(n=n())
+
+smd_results <- aa_data %>%
+  group_by(stratum) %>%
+  summarise(
+    smd_list = list(CreateTableOne(vars = vars,
+                                   strata = "treatment",
+                                   data = cur_data(), test = FALSE) %>% ExtractSmd()
+  )) %>% unnest_wider(smd_list)
+
+
+weighted_smd <- smd_results %>%
+  inner_join(stratum_sizes, by = "stratum") %>%
+  mutate(weight = n/sum(n))
+
+weighted_smd_summary <- weighted_smd %>%
+  summarise(across(where(is.numeric), ~sum(.x*weight, na.rm = TRUE)))
+
+weighted_smd_summary <- weighted_smd_summary %>% select(-n,-weight,-stratum)
+```
+
+
+```{r}
+# check PH assumptions
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum ==s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  print(cox.zph(cox_model))
+}
+
+# covariate balance in each stratum
+
+stratum_smds <- data.frame(stratum = numeric(),
+                           covariate = character(),
+                           smd = numeric(),
+                           n = numeric())
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum ==s)
+  table1 <- CreateTableOne(vars = vars, strata = "treatment", data = stratum_data)
+  smd<- ExtractSmd(table1)
+  stratum_smds <- rbind(stratum_smds,
+                        data.frame(stratum = s,
+                                   variable = vars,
+                                   smd = smd,
+                                   n = nrow(stratum_data)
+                                   ))
+  }
+
+print(stratum_smds)
+
+weighted_smds <- stratum_smds %>% group_by(variable) %>%
+  summarise(weighted_smd = sum(`X1.vs.2`*n)/sum(n))
+
+weighted_smds
+
+# generating proprotions 
+library(dplyr)
+proportions_by_variable <- stratum_smds%>%
+  group_by(variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+```
+
+### PS as an additional covariate 
+
+```{r}
+doubly_robust <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy + pscore, data = aa_data)
+a<- summary(doubly_robust)
+
+doubly_robust_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(doubly_robust)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(doubly_robust)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(doubly_robust_results)
+```
+
+### Covariate Balance Check 
+
+```{r}
+# Unmatched 
+table_unmatched <- CreateTableOne(vars = vars, strata = "treatment", data = aa_data, test = TRUE, 
+                                  addOverall = TRUE ) 
+# nearest neighbor
+table_nn <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_nn)
+
+## caliper 
+table_caliper <-  CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_caliper)
+
+## optimal 
+table_optimal <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_optimal)
+
+## iptw_with_trimming
+table_iptw_trimming <- table_sw_1
+## stablized iptw
+table_iptw_stablized <- table_sw
+
+```
+
+```{r}
+## Construct a data frame containing variable name and SMD from all methods
+dataPlot <- data.frame(variable   = rownames(ExtractSmd(table_unmatched)),
+                       Unmatched  = as.numeric(ExtractSmd(table_unmatched)),
+                       Matched_optimal  = as.numeric(ExtractSmd(tabMatched_optimal)),
+                       Matched_caliper_0.1  = as.numeric(ExtractSmd(table_caliper)),
+                       Matched_nearest = as.numeric(ExtractSmd(table_iptw_trimming)),
+                       iptw_trimming = as.numeric(ExtractSmd(table_nn)),
+                       iptw_stabilized= as.numeric(ExtractSmd(table_iptw_stablized)),
+                       ps_stratification = as.numeric(weighted_smd_summary)
+                       )
+
+## Create long-format data for ggplot2
+dataPlotMelt <- melt(data          = dataPlot,
+                     id.vars       = c("variable"),
+                     variable.name = "Method",
+                     value.name    = "SMD")
+
+## Order variable names by magnitude of SMD
+varNames <- as.character(dataPlot$variable)[order(dataPlot$Unmatched)]
+
+## Order factor levels in the same order
+dataPlotMelt$variable <- factor(dataPlotMelt$variable,
+                                levels = varNames)
+
+## Plot using ggplot2
+ggplot(data = dataPlotMelt,
+       mapping = aes(x = variable, y = SMD, group = Method, color = Method)) +
+    geom_line() +
+    geom_point() +
+    geom_hline(yintercept = 0.1, color = "black", size = 0.1) +
+    coord_flip() +
+    theme_bw() +
+    theme(legend.key = element_blank())
+```
+
+### Results
+
+####Table
+
+```{r}
+library(dplyr) 
+library(purrr) 
+
+# Function to extract and combine treatment effect results 
+aggregate_treatment_results <- function(results_list, method_names, treatment_var = "as.factor(treatment)1") 
+{ 
+  # Add method names to each dataframe 
+  named_results <- map2(results_list, method_names, ~mutate(.x, Method = .y)) 
+  # Combine all results into one dataframe 
+  combined_results <- bind_rows(named_results) 
+  # Filter for the treatment variable only 
+  treatment_results <- combined_results %>% 
+    filter(Variable == treatment_var) %>% select(Method, Variable, HR, Lower_CI, Upper_CI, p_value) %>% rename( Hazard_Ratio = HR)
+  return(treatment_results) }
+
+```
+
+```{r}
+# List of results from different PS methods 
+results_list <- list(crude_results, 
+                     cov_adj_results, 
+                     nn_results,
+                     nn_0.2_results,
+                     optimal_results,
+             #        iptw_trimming_results,
+                     stablized_iptw_results,
+                   #  final_att_results,
+                     final_ate_results,
+                     doubly_robust_results
+                     ) 
+method_names <-  c("Crude", 
+                  "Covariate Adjustment", 
+                  "NNM",
+                  "NNM (caliper width = 0.2)",
+                  "Optimal Matching",
+                 #"IPTW (5% trimming)",
+                  "Stablized IPTW",
+                 #"PS Stratification (5 strata) - ATT",
+                   "PS Stratification (5 strata)",
+                  "PS as Covariate"
+                  )
+
+
+a <- aggregate_treatment_results(results_list, method_names)
+a <- a %>% select(Method,Hazard_Ratio, Lower_CI, Upper_CI, p_value);
+rownames(a) <- NULL
+print(a)
+
+b <- a
+b$Hazard_Ratio <- round(b$Hazard_Ratio,2)
+b$Lower_CI <- round(b$Lower_CI,2)
+b$Upper_CI <- round(b$Upper_CI,2)
+print(b)
+
+write.csv(a, "Asian_complete_data_results_ttnt.csv", row.names = FALSE)
+```
+#### Forest Plot
+```{r}
+# Define the desired order manually
+desired_order <- c("Doubly Robust (PS as a covariate)",
+                   "PS Stratification (5 strata) - ATE",
+                   "PS Stratification (5 strata) - ATT",
+                   "Stablized IPTW",
+                   # "IPTW (with trimming)",
+                    "Optimal Matching",
+                   "Nerest Neighbor Matching (caliper width = 0.2)",
+                    "Nerest Neighbor Matching",
+                    "Covariate Adjustment",
+                   "Crude")
+
+# Convert Method column to factor with specified order
+a$Method <- factor(a$Method, levels = desired_order)
+
+ggplot(a,  aes(y = Method, x = Hazard_Ratio)) + geom_point(size = 3, color = "blue") + # Plot HR 
+  geom_errorbarh(aes(xmin = Lower_CI, xmax = Upper_CI), height = 0.2) + # CI lines 
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") + # Reference line at HR = 1 
+  labs(title = "Race/Ethnicity Hazard Ratios with 95% CI", x = "Hazard Ratio", y = "Method") + theme_minimal()
+```
+
+## Hispanic or Latino
+### Crude
+```{r}
+# match each race/ethnicity group separately
+aa_data <- ttnt_data %>% filter(combined_race_ethnicity %in% c("White", "Hispanic or Latino" ))
+aa_data <- aa_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+
+counts <- aa_data %>%
+  group_by(combined_race_ethnicity) %>%
+  summarise(count = n()); counts
+
+# results 
+crude <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data)
+a  <- summary(crude)
+
+crude_results <- data.frame( Variable = "as.factor(treatment)1", 
+                             HR = exp(coef(a)[1]), 
+                             Lower_CI = exp(confint(crude)["as.factor(treatment)1", 1]), 
+                             Upper_CI = exp(confint(crude)["as.factor(treatment)1", 2]), 
+                             p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(crude_results) 
+```
+```{r}
+
+```
+###Covariate adjustment 
+```{r}
+# results 
+covariate_adj <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy, data = aa_data)
+a <- summary(covariate_adj)
+a
+# cov_adj_results <- data.frame( Variable = "as.factor(treatment)1", HR = coef(a), Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI, P-value = )
+# print(crude_results)
+
+# Extract HR, confidence intervals, and p-values for the treatment variable 
+cov_adj_results <- data.frame(Variable = "as.factor(treatment)1", 
+                              HR = exp(coef(a)[1]), 
+                              Lower_CI = exp(confint(covariate_adj)["as.factor(treatment)1", 1]), 
+                              Upper_CI = exp(confint(covariate_adj)["as.factor(treatment)1", 2]), 
+                              p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(cov_adj_results) 
+```
+
+### PS Matching
+#### Nearest neighbor matching 
+
+```{r}
+# PS score calculation
+aa_data$gender <- as.factor(aa_data$gender)
+aa_data$treatment<- as.factor(aa_data$treatment)
+ps_model <- glm(treatment ~ age_group +
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+              aa_data, family = binomial())
+aa_data$pscore <- predict(ps_model, type="response")
+#######################################################################################################
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "nearest", 
+               distance = "glm")
+
+match.data_nn <- match.data(ps_model_nn)
+
+
+# original PS score distribution before matching 
+ggplot(aa_data, aes(x = pscore, fill = factor(treatment)))+
+  geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_nn)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_1 <- knitr::kable(table1_df,
+      caption = "Table 1: Comparison of Demographics - White vs. African American")
+aa_table1_1
+```
+
+```{r}
+library(survival)
+# ps matching (optimal) results
+nn_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_nn)
+a <- summary(nn_match)
+
+nn_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), 
+                          Lower_CI = exp(confint(nn_match)["as.factor(treatment)1", 1]), 
+                          Upper_CI = exp(confint(nn_match)["as.factor(treatment)1", 2]), 
+                          p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(nn_results)
+```
+
+#### Nerest Neighbor matching (caliper width = 0.2)
+```{r}
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "nearest", 
+               caliper = 0.1,
+               distance = "glm")
+
+match.data_caliper <- match.data(ps_model_nn)
+
+# original PS score distribution before matching 
+# ggplot(dat, aes(x = pscore, fill = factor(treatment)))+
+#   geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_caliper)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_2 <- knitr::kable(table1_df)
+aa_table1_2
+```
+
+```{r}
+library(survival)
+#  results
+nn_caliper_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_caliper)
+a <- summary(nn_caliper_match)
+
+nn_0.2_results <- data.frame( Variable = "as.factor(treatment)1", 
+                              HR = exp(coef(a)[1]), 
+                              Lower_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 1]), 
+                              Upper_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(nn_0.2_results)
+```
+#### Optimal matching 
+```{r}
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "optimal",
+               distance = "glm")
+
+match.data_optimal <- match.data(ps_model_nn)
+
+# original PS score distribution before matching 
+# ggplot(dat, aes(x = pscore, fill = factor(treatment)))+
+#   geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_optimal)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_2 <- knitr::kable(table1_df)
+aa_table1_2
+```
+
+```{r}
+library(survival)
+# ps matching (optimal) results
+nn_caliper_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_optimal)
+a <- summary(nn_caliper_match)
+
+optimal_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), 
+                               Lower_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(optimal_results)
+```
+### IPTW (with trimming)
+```{r}
+# calculate IPTW weights
+aa_data$weightss <- ifelse(aa_data$treatment == 1, 1/aa_data$pscore, 1/(1-aa_data$pscore))
+# apply trimming to weights
+lower_threshold <- quantile(aa_data$weightss,0.05)
+upper_threshold <- quantile(aa_data$weightss,0.95)
+aa_data_trimmed <- aa_data %>% filter(weightss >=lower_threshold & 
+                                        weightss <= upper_threshold)
+
+design <- svydesign(ids = ~1, data =aa_data, weights = ~ weightss)
+table_sw_1<- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+
+cox_model_trimmed_2<- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data_trimmed, weights = weightss)
+a <- summary(cox_model_trimmed_2)
+
+iptw_trimming_results<- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(cox_model_trimmed_2)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(cox_model_trimmed_2)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 6] ) 
+# Print results 
+print(iptw_trimming_results)
+
+```
+
+### Stablized IPTW
+```{r}
+library(survey)
+p_exposure <- mean(aa_data$treatment==1)
+p_non_exposure <- 1-p_exposure
+
+aa_data$ps_weights_3 <- ifelse(aa_data$treatment == 1, p_exposure/aa_data$pscore, p_non_exposure/(1-aa_data$pscore))
+
+design_1 <- svydesign(ids = ~1, data =aa_data, weights = ~ ps_weights_3)
+table_sw<- svyCreateTableOne( vars =  vars, strata = "treatment", data = design_1, test =FALSE, addOverall = TRUE)
+print(table_sw,smd=TRUE)
+
+# check weight distribution
+summary(aa_data$ps_weights_3)
+# check for extreme weights
+quantile(aa_data$ps_weights_3, probs = c(0,0.1,0.05,0.95,0.99,1))
+
+# histogram
+ggplot(aa_data, 
+       aes(x = ps_weights_3, fill = factor(treatment))) +
+  geom_histogram(binwidth = 0.05, alpha = 0.5, position = "identity") + 
+  labs(title = "histogram of stablized iptw",
+       x = "stablized iptw",
+       fill = "race/ethnicity") + theme_minimal()
+ggplot(aa_data, 
+       aes(x = ps_weights_3, fill = factor(treatment))) +
+  geom_density(alpha = 0.5) + 
+  labs(title = "histogram of stablized iptw",
+       x = "stablized iptw",
+       fill = "race/ethnicity") + theme_minimal()
+
+cox_model<- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data, weights = ps_weights_3)
+a <- summary(cox_model)
+
+stablized_iptw_results<- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(cox_model)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(cox_model)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 6] ) 
+# Print results 
+print(stablized_iptw_results)
+```
+
+### PS Stratification - 5 strata
+```{r}
+
+# equal number (approx.)
+aa_data <- aa_data %>% mutate(
+  stratum = ntile(pscore,5)
+)
+
+table(aa_data$stratum)
+
+# summarize propensity scores within each stratum
+aa_data %>% group_by(stratum) %>% 
+  summarise(min_score = min(pscore),
+            max_score = max(pscore),
+            n = n())
+
+# visualize the propensity score distribution by strata
+library(ggplot2)
+ggplot(aa_data, aes(x = factor(stratum),
+                    y = pscore,
+                    fill = factor(stratum))) +
+  geom_boxplot() + labs(title = "PS distribution by stratum",
+                        x = "stratum",
+                        y = "ps") + theme_minimal()
+
+# calculate outcomes within each stratum
+stratum_results <- list()
+
+for(s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum = s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  stratum_results[[s]] <- summary(cox_model)
+}
+
+stratum_results
+
+```
+
+
+```{r}
+stratum_effects <- data.frame(
+  stratum = numeric(),
+  log_hr = numeric(),
+  var_log_hr = numeric(),
+  n_treated = numeric(),
+  n_control = numeric()
+)
+
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum == s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  
+  log_hr <- summary(cox_model)$coefficients[1]
+  se_log_hr <- summary(cox_model)$coefficients[3]
+  
+  hr <- exp(log_hr)
+  ci_lower <- exp(log_hr - 1.96*se_log_hr)
+  ci_upper <- exp(log_hr + 1.96*se_log_hr)
+  
+  n_treated <- nrow(subset(stratum_data, treatment == 1))
+  n_control <- nrow(subset(stratum_data, treatment == 0))
+  
+  stratum_effects <- rbind(
+    stratum_effects,
+    data.frame(stratum =s,
+              HR = hr,
+              log_hr = log_hr,
+              se_log_hr = se_log_hr,
+              var_log_hr = se_log_hr^2,
+              CI_lower = ci_lower,
+              CI_upper = ci_upper,
+              n_treated = n_treated,
+              n_control = n_control
+  ))
+}
+
+print(stratum_effects)
+# weighted HR for ATE
+total_population <- sum(stratum_effects$n_treated + stratum_effects$n_control)
+stratum_effects <- stratum_effects %>%
+  mutate(weight = (n_treated + n_control)/total_population)
+
+
+stratum_effects <- stratum_effects %>%
+
+  mutate(weight = 0.2)
+
+# Weighted log HR and variance for ATT
+
+weighted_log_hr <- sum(stratum_effects$log_hr * stratum_effects$weight)
+
+weighted_var_log_hr <- sum(stratum_effects$var_log_hr * stratum_effects$weight^2)
+
+# Convert to HR and confidence intervals
+
+ate_hr <- exp(weighted_log_hr)
+
+ate_ci_lower <- exp(weighted_log_hr - 1.96 * sqrt(weighted_var_log_hr))
+
+ate_ci_upper <- exp(weighted_log_hr + 1.96 * sqrt(weighted_var_log_hr))
+
+# Print ATT HR and confidence intervals
+
+list(ATE_HR = ate_hr, CI_lower = ate_ci_lower, CI_upper = ate_ci_upper)
+
+final_ate_results <- data.frame(HR = ate_hr, 
+                                Lower_CI = ate_ci_lower,
+                                Upper_CI = ate_ci_upper) %>% mutate(Variable = "as.factor(treatment)1")%>% mutate(p_value = NA)
+
+
+
+# Add weights based on the treated population in each stratum
+
+total_treated <- sum(stratum_effects$n_treated)
+
+stratum_effects <- stratum_effects %>%
+
+  mutate(weight = n_treated / total_treated)
+
+# Weighted log HR and variance for ATT
+
+weighted_log_hr <- sum(stratum_effects$log_hr * stratum_effects$weight)
+
+weighted_var_log_hr <- sum(stratum_effects$var_log_hr * stratum_effects$weight^2)
+
+# Convert to HR and confidence intervals
+
+att_hr <- exp(weighted_log_hr)
+
+att_ci_lower <- exp(weighted_log_hr - 1.96 * sqrt(weighted_var_log_hr))
+
+att_ci_upper <- exp(weighted_log_hr + 1.96 * sqrt(weighted_var_log_hr))
+
+# Print ATT HR and confidence intervals
+
+list(ATT_HR = att_hr, CI_lower = att_ci_lower, CI_upper = att_ci_upper)
+
+final_att_results <- data.frame(HR = att_hr, 
+                                Lower_CI = att_ci_lower,
+                                Upper_CI = att_ci_upper) %>% mutate(Variable = "as.factor(treatment)1") %>% mutate(p_value = NA)
+
+```
+
+```{r}
+stratum_sizes <- aa_data %>%
+  group_by(stratum) %>% summarise(n=n())
+
+smd_results <- aa_data %>%
+  group_by(stratum) %>%
+  summarise(
+    smd_list = list(CreateTableOne(vars = vars,
+                                   strata = "treatment",
+                                   data = cur_data(), test = FALSE) %>% ExtractSmd()
+  )) %>% unnest_wider(smd_list)
+
+
+weighted_smd <- smd_results %>%
+  inner_join(stratum_sizes, by = "stratum") %>%
+  mutate(weight = n/sum(n))
+
+weighted_smd_summary <- weighted_smd %>%
+  summarise(across(where(is.numeric), ~sum(.x*weight, na.rm = TRUE)))
+
+weighted_smd_summary <- weighted_smd_summary %>% select(-n,-weight,-stratum)
+```
+
+
+```{r}
+# check PH assumptions
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum ==s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  print(cox.zph(cox_model))
+}
+
+# covariate balance in each stratum
+
+stratum_smds <- data.frame(stratum = numeric(),
+                           covariate = character(),
+                           smd = numeric(),
+                           n = numeric())
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum ==s)
+  table1 <- CreateTableOne(vars = vars, strata = "treatment", data = stratum_data)
+  smd<- ExtractSmd(table1)
+  stratum_smds <- rbind(stratum_smds,
+                        data.frame(stratum = s,
+                                   variable = vars,
+                                   smd = smd,
+                                   n = nrow(stratum_data)
+                                   ))
+  }
+
+print(stratum_smds)
+
+weighted_smds <- stratum_smds %>% group_by(variable) %>%
+  summarise(weighted_smd = sum(`X1.vs.2`*n)/sum(n))
+
+weighted_smds
+
+# generating proprotions 
+library(dplyr)
+proportions_by_variable <- stratum_smds%>%
+  group_by(variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+```
+
+### PS as an additional covariate 
+
+```{r}
+doubly_robust <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy + pscore, data = aa_data)
+a<- summary(doubly_robust)
+
+doubly_robust_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(doubly_robust)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(doubly_robust)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(doubly_robust_results)
+```
+
+### Covariate Balance Check 
+
+```{r}
+# Unmatched 
+table_unmatched <- CreateTableOne(vars = vars, strata = "treatment", data = aa_data, test = TRUE, 
+                                  addOverall = TRUE ) 
+# nearest neighbor
+table_nn <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_nn)
+
+## caliper 
+table_caliper <-  CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_caliper)
+
+## optimal 
+table_optimal <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_optimal)
+
+## iptw_with_trimming
+table_iptw_trimming <- table_sw_1
+## stablized iptw
+table_iptw_stablized <- table_sw
+
+```
+
+```{r}
+## Construct a data frame containing variable name and SMD from all methods
+dataPlot <- data.frame(variable   = rownames(ExtractSmd(table_unmatched)),
+                       Unmatched  = as.numeric(ExtractSmd(table_unmatched)),
+                       Matched_optimal  = as.numeric(ExtractSmd(tabMatched_optimal)),
+                       Matched_caliper_0.1  = as.numeric(ExtractSmd(table_caliper)),
+                       Matched_nearest = as.numeric(ExtractSmd(table_iptw_trimming)),
+                       iptw_trimming = as.numeric(ExtractSmd(table_nn)),
+                       iptw_stabilized= as.numeric(ExtractSmd(table_iptw_stablized)),
+                       ps_stratification = as.numeric(weighted_smd_summary)
+                       )
+
+## Create long-format data for ggplot2
+dataPlotMelt <- melt(data          = dataPlot,
+                     id.vars       = c("variable"),
+                     variable.name = "Method",
+                     value.name    = "SMD")
+
+## Order variable names by magnitude of SMD
+varNames <- as.character(dataPlot$variable)[order(dataPlot$Unmatched)]
+
+## Order factor levels in the same order
+dataPlotMelt$variable <- factor(dataPlotMelt$variable,
+                                levels = varNames)
+
+## Plot using ggplot2
+ggplot(data = dataPlotMelt,
+       mapping = aes(x = variable, y = SMD, group = Method, color = Method)) +
+    geom_line() +
+    geom_point() +
+    geom_hline(yintercept = 0.1, color = "black", size = 0.1) +
+    coord_flip() +
+    theme_bw() +
+    theme(legend.key = element_blank())
+```
+
+### Results
+
+####Table
+
+```{r}
+library(dplyr) 
+library(purrr) 
+
+# Function to extract and combine treatment effect results 
+aggregate_treatment_results <- function(results_list, method_names, treatment_var = "as.factor(treatment)1") 
+{ 
+  # Add method names to each dataframe 
+  named_results <- map2(results_list, method_names, ~mutate(.x, Method = .y)) 
+  # Combine all results into one dataframe 
+  combined_results <- bind_rows(named_results) 
+  # Filter for the treatment variable only 
+  treatment_results <- combined_results %>% 
+    filter(Variable == treatment_var) %>% select(Method, Variable, HR, Lower_CI, Upper_CI, p_value) %>% rename( Hazard_Ratio = HR)
+  return(treatment_results) }
+
+```
+
+```{r}
+# List of results from different PS methods 
+results_list <- list(crude_results, 
+                     cov_adj_results, 
+                     nn_results,
+                     nn_0.2_results,
+                     optimal_results,
+                     iptw_trimming_results,
+                     stablized_iptw_results,
+                   #  final_att_results,
+                     final_ate_results,
+                     doubly_robust_results
+                     ) 
+method_names <- c("Crude", 
+                  "Covariate Adjustment", 
+                  "NNM",
+                  "NNM (caliper width = 0.2)",
+                  "Optimal Matching",
+                 "IPTW (5% trimming)",
+                  "Stablized IPTW",
+                 #"PS Stratification (5 strata) - ATT",
+                   "PS Stratification (5 strata)",
+                  "PS as Covariate"
+                  )
+
+
+a <- aggregate_treatment_results(results_list, method_names)
+a <- a %>% select(Method,Hazard_Ratio, Lower_CI, Upper_CI, p_value);
+rownames(a) <- NULL
+print(a)
+
+b <- a
+b$Hazard_Ratio <- round(b$Hazard_Ratio,2)
+b$Lower_CI <- round(b$Lower_CI,2)
+b$Upper_CI <- round(b$Upper_CI,2)
+print(b)
+
+write.csv(a, "Hispanic or Latino_complete_data_results_ttnt.csv", row.names = FALSE)
+```
+#### Forest Plot
+```{r}
+# Define the desired order manually
+desired_order <- c("Doubly Robust (PS as a covariate)",
+                   "PS Stratification (5 strata) - ATE",
+                   "PS Stratification (5 strata) - ATT",
+                   "Stablized IPTW",
+                   "IPTW (with trimming)",
+                    "Optimal Matching",
+                   "Nerest Neighbor Matching (caliper width = 0.2)",
+                    "Nerest Neighbor Matching",
+                    "Covariate Adjustment",
+                   "Crude")
+
+# Convert Method column to factor with specified order
+a$Method <- factor(a$Method, levels = desired_order)
+
+ggplot(a,  aes(y = Method, x = Hazard_Ratio)) + geom_point(size = 3, color = "blue") + # Plot HR 
+  geom_errorbarh(aes(xmin = Lower_CI, xmax = Upper_CI), height = 0.2) + # CI lines 
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") + # Reference line at HR = 1 
+  labs(title = "Race/Ethnicity Hazard Ratios with 95% CI", x = "Hazard Ratio", y = "Method") + theme_minimal()
+```
+
+## Other Races
+### Crude
+```{r}
+# match each race/ethnicity group separately
+aa_data <- ttnt_data %>% filter(combined_race_ethnicity %in% c("White", "Other Races" ))
+aa_data <- aa_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+
+counts <- aa_data %>%
+  group_by(combined_race_ethnicity) %>%
+  summarise(count = n()); counts
+
+# results 
+crude <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data)
+a  <- summary(crude)
+
+crude_results <- data.frame( Variable = "as.factor(treatment)1", 
+                             HR = exp(coef(a)[1]), 
+                             Lower_CI = exp(confint(crude)["as.factor(treatment)1", 1]), 
+                             Upper_CI = exp(confint(crude)["as.factor(treatment)1", 2]), 
+                             p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(crude_results) 
+```
+```{r}
+# data2 <- read.csv("cr_ttnt_data_combined.csv")
+# # match each race/ethnicity group separately
+# aa_data <- data2 %>% filter(combined_race_ethnicity %in% c("White", "Other Races" ))
+# aa_data <- aa_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+# 
+# counts <- aa_data %>%
+#   group_by(combined_race_ethnicity) %>%
+#   summarise(count = n()); counts
+# 
+# # results 
+# crude <-coxph(Surv(TTNT_days, fstatus_combined_combined ) ~ as.factor(treatment), data = aa_data)
+# a  <- summary(crude)
+# 
+# crude_results <- data.frame( Variable = "as.factor(treatment)1", 
+#                              HR = exp(coef(a)[1]), 
+#                              Lower_CI = exp(confint(crude)["as.factor(treatment)1", 1]), 
+#                              Upper_CI = exp(confint(crude)["as.factor(treatment)1", 2]), 
+#                              p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# # Print results 
+# print(crude_results) 
+```
+###Covariate adjustment 
+```{r}
+# results 
+covariate_adj <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy, data = aa_data)
+a <- summary(covariate_adj)
+a
+# cov_adj_results <- data.frame( Variable = "as.factor(treatment)1", HR = coef(a), Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI, P-value = )
+# print(crude_results)
+
+# Extract HR, confidence intervals, and p-values for the treatment variable 
+cov_adj_results <- data.frame(Variable = "as.factor(treatment)1", 
+                              HR = exp(coef(a)[1]), 
+                              Lower_CI = exp(confint(covariate_adj)["as.factor(treatment)1", 1]), 
+                              Upper_CI = exp(confint(covariate_adj)["as.factor(treatment)1", 2]), 
+                              p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(cov_adj_results) 
+```
+
+### PS Matching
+#### Nearest neighbor matching 
+
+```{r}
+# PS score calculation
+aa_data$gender <- as.factor(aa_data$gender)
+aa_data$treatment<- as.factor(aa_data$treatment)
+ps_model <- glm(treatment ~ age_group +
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+              aa_data, family = binomial())
+aa_data$pscore <- predict(ps_model, type="response")
+#######################################################################################################
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "nearest", 
+               distance = "glm")
+
+match.data_nn <- match.data(ps_model_nn)
+
+
+# original PS score distribution before matching 
+ggplot(aa_data, aes(x = pscore, fill = factor(treatment)))+
+  geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_nn)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_1 <- knitr::kable(table1_df,
+      caption = "Table 1: Comparison of Demographics - White vs. African American")
+aa_table1_1
+```
+
+```{r}
+library(survival)
+# ps matching (optimal) results
+nn_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_nn)
+a <- summary(nn_match)
+
+nn_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), 
+                          Lower_CI = exp(confint(nn_match)["as.factor(treatment)1", 1]), 
+                          Upper_CI = exp(confint(nn_match)["as.factor(treatment)1", 2]), 
+                          p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(nn_results)
+```
+
+#### Nerest Neighbor matching (caliper width = 0.2)
+```{r}
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "nearest", 
+               caliper = 0.2,
+               distance = "glm")
+
+match.data_caliper <- match.data(ps_model_nn)
+
+# original PS score distribution before matching 
+# ggplot(dat, aes(x = pscore, fill = factor(treatment)))+
+#   geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_caliper)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_2 <- knitr::kable(table1_df)
+aa_table1_2
+```
+
+```{r}
+library(survival)
+#  results
+nn_caliper_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_caliper)
+a <- summary(nn_caliper_match)
+
+nn_0.1_results <- data.frame( Variable = "as.factor(treatment)1", 
+                              HR = exp(coef(a)[1]), 
+                              Lower_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 1]), 
+                              Upper_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(nn_0.1_results)
+```
+#### Optimal matching 
+```{r}
+ps_model_nn <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               aa_data,
+               method = "optimal",
+               distance = "glm")
+
+match.data_optimal <- match.data(ps_model_nn)
+
+# original PS score distribution before matching 
+# ggplot(dat, aes(x = pscore, fill = factor(treatment)))+
+#   geom_density(alpha = 0.5) 
+
+# PS score distribution after matching 
+# plot(ps_model_aa, type = "histogram")
+# Plot density of propensity scores for treatment and control groups before matching 
+ggplot(match.data_nn , aes(x = distance, fill = as.factor(treatment))) + geom_histogram(position = "identity", alpha = 0.6, bins = 30) + scale_fill_manual(values = c("skyblue", "salmon"), labels = c("White", "African American")) + labs( title = "Propensity Score Distribution", x = "Propensity Score", y = "Density", fill = "" ) + theme_minimal() + theme( plot.title = element_text(size = 14, face = "bold"), plot.subtitle = element_text(size = 10), legend.position = "top" )
+
+```
+
+```{r}
+# SMDs calculations
+library(tableone)
+table1 <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_optimal)
+table1_df <- print(table1, showAllLevels = TRUE, smd = TRUE)
+
+aa_table1_2 <- knitr::kable(table1_df)
+aa_table1_2
+```
+
+```{r}
+library(survival)
+# ps matching (optimal) results
+nn_caliper_match <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = match.data_optimal)
+a <- summary(nn_caliper_match)
+
+optimal_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), 
+                               Lower_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(nn_caliper_match)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(optimal_results)
+```
+### IPTW (with trimming)
+```{r}
+# calculate IPTW weights
+aa_data$weightss <- ifelse(aa_data$treatment == 1, 1/aa_data$pscore, 1/(1-aa_data$pscore))
+# apply trimming to weights
+lower_threshold <- quantile(aa_data$weightss,0.05)
+upper_threshold <- quantile(aa_data$weightss,0.95)
+aa_data_trimmed <- aa_data %>% filter(weightss >=lower_threshold & 
+                                        weightss <= upper_threshold)
+
+design <- svydesign(ids = ~1, data =aa_data, weights = ~ weightss)
+table_sw_1<- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+
+cox_model_trimmed_2<- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data_trimmed, weights = weightss)
+a <- summary(cox_model_trimmed_2)
+
+iptw_trimming_results<- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(cox_model_trimmed_2)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(cox_model_trimmed_2)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 6] ) 
+# Print results 
+print(iptw_trimming_results)
+
+```
+
+### Stablized IPTW
+```{r}
+library(survey)
+p_exposure <- mean(aa_data$treatment==1)
+p_non_exposure <- 1-p_exposure
+
+aa_data$ps_weights_3 <- ifelse(aa_data$treatment == 1, p_exposure/aa_data$pscore, p_non_exposure/(1-aa_data$pscore))
+
+design_1 <- svydesign(ids = ~1, data =aa_data, weights = ~ ps_weights_3)
+table_sw<- svyCreateTableOne( vars =  vars, strata = "treatment", data = design_1, test =FALSE, addOverall = TRUE)
+print(table_sw,smd=TRUE)
+
+# check weight distribution
+summary(aa_data$ps_weights_3)
+# check for extreme weights
+quantile(aa_data$ps_weights_3, probs = c(0,0.1,0.05,0.95,0.99,1))
+
+# histogram
+ggplot(aa_data, 
+       aes(x = ps_weights_3, fill = factor(treatment))) +
+  geom_histogram(binwidth = 0.05, alpha = 0.5, position = "identity") + 
+  labs(title = "histogram of stablized iptw",
+       x = "stablized iptw",
+       fill = "race/ethnicity") + theme_minimal()
+ggplot(aa_data, 
+       aes(x = ps_weights_3, fill = factor(treatment))) +
+  geom_density(alpha = 0.5) + 
+  labs(title = "histogram of stablized iptw",
+       x = "stablized iptw",
+       fill = "race/ethnicity") + theme_minimal()
+
+cox_model<- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data, weights = ps_weights_3)
+a <- summary(cox_model)
+
+stablized_iptw_results<- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(cox_model)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(cox_model)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 6] ) 
+# Print results 
+print(stablized_iptw_results)
+```
+
+### PS Stratification - 5 strata
+```{r}
+
+# equal number (approx.)
+aa_data <- aa_data %>% mutate(
+  stratum = ntile(pscore,5)
+)
+
+table(aa_data$stratum)
+
+# summarize propensity scores within each stratum
+aa_data %>% group_by(stratum) %>% 
+  summarise(min_score = min(pscore),
+            max_score = max(pscore),
+            n = n())
+
+# visualize the propensity score distribution by strata
+library(ggplot2)
+ggplot(aa_data, aes(x = factor(stratum),
+                    y = pscore,
+                    fill = factor(stratum))) +
+  geom_boxplot() + labs(title = "PS distribution by stratum",
+                        x = "stratum",
+                        y = "ps") + theme_minimal()
+
+# calculate outcomes within each stratum
+stratum_results <- list()
+
+for(s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum = s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  stratum_results[[s]] <- summary(cox_model)
+}
+
+stratum_results
+
+```
+
+
+```{r}
+stratum_effects <- data.frame(
+  stratum = numeric(),
+  log_hr = numeric(),
+  var_log_hr = numeric(),
+  n_treated = numeric(),
+  n_control = numeric()
+)
+
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum == s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  
+  log_hr <- summary(cox_model)$coefficients[1]
+  se_log_hr <- summary(cox_model)$coefficients[3]
+  
+  hr <- exp(log_hr)
+  ci_lower <- exp(log_hr - 1.96*se_log_hr)
+  ci_upper <- exp(log_hr + 1.96*se_log_hr)
+  
+  n_treated <- nrow(subset(stratum_data, treatment == 1))
+  n_control <- nrow(subset(stratum_data, treatment == 0))
+  
+  stratum_effects <- rbind(
+    stratum_effects,
+    data.frame(stratum =s,
+              HR = hr,
+              log_hr = log_hr,
+              se_log_hr = se_log_hr,
+              var_log_hr = se_log_hr^2,
+              CI_lower = ci_lower,
+              CI_upper = ci_upper,
+              n_treated = n_treated,
+              n_control = n_control
+  ))
+}
+
+print(stratum_effects)
+# weighted HR for ATE
+total_population <- sum(stratum_effects$n_treated + stratum_effects$n_control)
+stratum_effects <- stratum_effects %>%
+  mutate(weight = (n_treated + n_control)/total_population)
+
+
+stratum_effects <- stratum_effects %>%
+
+  mutate(weight = 0.2)
+
+# Weighted log HR and variance for ATT
+
+weighted_log_hr <- sum(stratum_effects$log_hr * stratum_effects$weight)
+
+weighted_var_log_hr <- sum(stratum_effects$var_log_hr * stratum_effects$weight^2)
+
+# Convert to HR and confidence intervals
+
+ate_hr <- exp(weighted_log_hr)
+
+ate_ci_lower <- exp(weighted_log_hr - 1.96 * sqrt(weighted_var_log_hr))
+
+ate_ci_upper <- exp(weighted_log_hr + 1.96 * sqrt(weighted_var_log_hr))
+
+# Print ATT HR and confidence intervals
+
+list(ATE_HR = ate_hr, CI_lower = ate_ci_lower, CI_upper = ate_ci_upper)
+
+final_ate_results <- data.frame(HR = ate_hr, 
+                                Lower_CI = ate_ci_lower,
+                                Upper_CI = ate_ci_upper) %>% mutate(Variable = "as.factor(treatment)1")%>% mutate(p_value = NA)
+
+
+
+# Add weights based on the treated population in each stratum
+
+total_treated <- sum(stratum_effects$n_treated)
+
+stratum_effects <- stratum_effects %>%
+
+  mutate(weight = n_treated / total_treated)
+
+# Weighted log HR and variance for ATT
+
+weighted_log_hr <- sum(stratum_effects$log_hr * stratum_effects$weight)
+
+weighted_var_log_hr <- sum(stratum_effects$var_log_hr * stratum_effects$weight^2)
+
+# Convert to HR and confidence intervals
+
+att_hr <- exp(weighted_log_hr)
+
+att_ci_lower <- exp(weighted_log_hr - 1.96 * sqrt(weighted_var_log_hr))
+
+att_ci_upper <- exp(weighted_log_hr + 1.96 * sqrt(weighted_var_log_hr))
+
+# Print ATT HR and confidence intervals
+
+list(ATT_HR = att_hr, CI_lower = att_ci_lower, CI_upper = att_ci_upper)
+
+final_att_results <- data.frame(HR = att_hr, 
+                                Lower_CI = att_ci_lower,
+                                Upper_CI = att_ci_upper) %>% mutate(Variable = "as.factor(treatment)1") %>% mutate(p_value = NA)
+
+```
+
+```{r}
+stratum_sizes <- aa_data %>%
+  group_by(stratum) %>% summarise(n=n())
+
+smd_results <- aa_data %>%
+  group_by(stratum) %>%
+  summarise(
+    smd_list = list(CreateTableOne(vars = vars,
+                                   strata = "treatment",
+                                   data = cur_data(), test = FALSE) %>% ExtractSmd()
+  )) %>% unnest_wider(smd_list)
+
+
+weighted_smd <- smd_results %>%
+  inner_join(stratum_sizes, by = "stratum") %>%
+  mutate(weight = n/sum(n))
+
+weighted_smd_summary <- weighted_smd %>%
+  summarise(across(where(is.numeric), ~sum(.x*weight, na.rm = TRUE)))
+
+weighted_smd_summary <- weighted_smd_summary %>% select(-n,-weight,-stratum)
+```
+
+
+```{r}
+# check PH assumptions
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum ==s)
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = stratum_data)
+  print(cox.zph(cox_model))
+}
+
+# covariate balance in each stratum
+
+stratum_smds <- data.frame(stratum = numeric(),
+                           covariate = character(),
+                           smd = numeric(),
+                           n = numeric())
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum ==s)
+  table1 <- CreateTableOne(vars = vars, strata = "treatment", data = stratum_data)
+  smd<- ExtractSmd(table1)
+  stratum_smds <- rbind(stratum_smds,
+                        data.frame(stratum = s,
+                                   variable = vars,
+                                   smd = smd,
+                                   n = nrow(stratum_data)
+                                   ))
+  }
+
+print(stratum_smds)
+
+weighted_smds <- stratum_smds %>% group_by(variable) %>%
+  summarise(weighted_smd = sum(`X1.vs.2`*n)/sum(n))
+
+weighted_smds
+
+# generating proprotions 
+library(dplyr)
+proportions_by_variable <- stratum_smds%>%
+  group_by(variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+```
+
+### PS as an additional covariate 
+
+```{r}
+doubly_robust <- coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy + pscore, data = aa_data)
+a<- summary(doubly_robust)
+
+doubly_robust_results <- data.frame( Variable = "as.factor(treatment)1", HR = exp(coef(a)[1]), Lower_CI = exp(confint(doubly_robust)["as.factor(treatment)1", 1]), Upper_CI = exp(confint(doubly_robust)["as.factor(treatment)1", 2]), p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(doubly_robust_results)
+```
+
+### Covariate Balance Check 
+
+```{r}
+# Unmatched 
+table_unmatched <- CreateTableOne(vars = vars, strata = "treatment", data = aa_data, test = TRUE, 
+                                  addOverall = TRUE ) 
+# nearest neighbor
+table_nn <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_nn)
+
+## caliper 
+table_caliper <-  CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_caliper)
+
+## optimal 
+table_optimal <- CreateTableOne(vars = vars,
+                         strata = "treatment",
+                         data = match.data_optimal)
+
+## iptw_with_trimming
+table_iptw_trimming <- table_sw_1
+## stablized iptw
+table_iptw_stablized <- table_sw
+
+```
+
+```{r}
+## Construct a data frame containing variable name and SMD from all methods
+dataPlot <- data.frame(variable   = rownames(ExtractSmd(table_unmatched)),
+                       Unmatched  = as.numeric(ExtractSmd(table_unmatched)),
+                       Matched_optimal  = as.numeric(ExtractSmd(tabMatched_optimal)),
+                       Matched_caliper_0.1  = as.numeric(ExtractSmd(table_caliper)),
+                       Matched_nearest = as.numeric(ExtractSmd(table_iptw_trimming)),
+                       iptw_trimming = as.numeric(ExtractSmd(table_nn)),
+                       iptw_stabilized= as.numeric(ExtractSmd(table_iptw_stablized)),
+                       ps_stratification = as.numeric(weighted_smd_summary)
+                       )
+
+## Create long-format data for ggplot2
+dataPlotMelt <- melt(data          = dataPlot,
+                     id.vars       = c("variable"),
+                     variable.name = "Method",
+                     value.name    = "SMD")
+
+## Order variable names by magnitude of SMD
+varNames <- as.character(dataPlot$variable)[order(dataPlot$Unmatched)]
+
+## Order factor levels in the same order
+dataPlotMelt$variable <- factor(dataPlotMelt$variable,
+                                levels = varNames)
+
+## Plot using ggplot2
+ggplot(data = dataPlotMelt,
+       mapping = aes(x = variable, y = SMD, group = Method, color = Method)) +
+    geom_line() +
+    geom_point() +
+    geom_hline(yintercept = 0.1, color = "black", size = 0.1) +
+    coord_flip() +
+    theme_bw() +
+    theme(legend.key = element_blank())
+```
+
+### Results
+
+####Table
+
+```{r}
+library(dplyr) 
+library(purrr) 
+
+# Function to extract and combine treatment effect results 
+aggregate_treatment_results <- function(results_list, method_names, treatment_var = "as.factor(treatment)1") 
+{ 
+  # Add method names to each dataframe 
+  named_results <- map2(results_list, method_names, ~mutate(.x, Method = .y)) 
+  # Combine all results into one dataframe 
+  combined_results <- bind_rows(named_results) 
+  # Filter for the treatment variable only 
+  treatment_results <- combined_results %>% 
+    filter(Variable == treatment_var) %>% select(Method, Variable, HR, Lower_CI, Upper_CI, p_value) %>% rename( Hazard_Ratio = HR)
+  return(treatment_results) }
+
+```
+
+```{r}
+# List of results from different PS methods 
+results_list <- list(crude_results, 
+                     cov_adj_results, 
+                     nn_results,
+                     nn_0.1_results,
+                     optimal_results,
+                     iptw_trimming_results,
+                     stablized_iptw_results,
+                   #  final_att_results,
+                     final_ate_results,
+                     doubly_robust_results
+                     ) 
+method_names <-  c("Crude", 
+                  "Covariate Adjustment", 
+                  "NNM",
+                  "NNM (caliper width = 0.2)",
+                  "Optimal Matching",
+                 "IPTW (5% trimming)",
+                  "Stablized IPTW",
+                 #"PS Stratification (5 strata) - ATT",
+                   "PS Stratification (5 strata)",
+                  "PS as Covariate"
+                  )
+
+a <- aggregate_treatment_results(results_list, method_names)
+a <- a %>% select(Method,Hazard_Ratio, Lower_CI, Upper_CI, p_value);
+rownames(a) <- NULL
+print(a)
+
+b <- a
+b$Hazard_Ratio <- round(b$Hazard_Ratio,2)
+b$Lower_CI <- round(b$Lower_CI,2)
+b$Upper_CI <- round(b$Upper_CI,2)
+print(b)
+
+write.csv(a, "Other Races_complete_data_results_ttnt.csv", row.names = FALSE)
+```
+#### Forest Plot
+```{r}
+# Define the desired order manually
+desired_order <- c("Doubly Robust (PS as a covariate)",
+                   "PS Stratification (5 strata) - ATE",
+                   "PS Stratification (5 strata) - ATT",
+                   "Stablized IPTW",
+                   "IPTW (with trimming)",
+                    "Optimal Matching",
+                   "Nerest Neighbor Matching (caliper width = 0.2)",
+                    "Nerest Neighbor Matching",
+                    "Covariate Adjustment",
+                   "Crude")
+
+# Convert Method column to factor with specified order
+a$Method <- factor(a$Method, levels = desired_order)
+
+ggplot(a,  aes(y = Method, x = Hazard_Ratio)) + geom_point(size = 3, color = "blue") + # Plot HR 
+  geom_errorbarh(aes(xmin = Lower_CI, xmax = Upper_CI), height = 0.2) + # CI lines 
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") + # Reference line at HR = 1 
+  labs(title = "Race/Ethnicity Hazard Ratios with 95% CI", x = "Hazard Ratio", y = "Method") + theme_minimal()
+```
