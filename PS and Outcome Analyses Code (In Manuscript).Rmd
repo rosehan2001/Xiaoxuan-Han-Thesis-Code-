@@ -1,0 +1,2205 @@
+---
+title: "os"
+author: "cohort selection"
+date: "2024-06-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+```{r}
+library(survival)
+vars <- c( "gender", "age_group", "combined_ecog", 
+           "issstage", "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", "hemoglobin",
+          "marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy")
+os_data <- read.csv("os_data.csv")
+os_data <-  os_data %>% mutate(combined_race_ethnicity 
+                               = factor(combined_race_ethnicity,
+                                            levels = c("White", 
+                                                       "Hispanic or Latino",
+                                                       "Asian",
+                                                       "African American",
+                                                       "Other Races",
+                                                       "Unknown/Missing")))
+os_data <- os_data %>% select("combined_race_ethnicity", 
+                              "gender", "age_group", "combined_ecog", 
+                              "issstage", "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", "hemoglobin",
+          "marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy","OS","event")
+```
+
+### African American
+```{r}
+#install.packages("mice")
+library(mice)
+#Sset "Unknown/missing" as NA
+os_data_2 <- os_data 
+os_data_2$combined_race_ethnicity[os_data_2$combined_race_ethnicity 
+                                  == "Unknown/Missing"] <- NA
+# set anemia, renal deficiency, .. as factors
+os_data_2$hemoglobin <- as.factor(os_data_2$hemoglobin)
+os_data_2$marker_calcium_result <- as.factor(os_data_2$marker_calcium_result)
+os_data_2$marker_creatinie_result <- as.factor(os_data_2$marker_creatinie_result)
+
+# only include covariates of interest
+os_data_2 <- os_data_2 %>% select("combined_race_ethnicity", 
+                                  "gender", "age_group", 
+                                  "combined_ecog", "issstage", 
+                                  "asct", "risk_group",
+                                  "sesindex2015_2019",
+                                  "year_diag_group", "hemoglobin",
+                                  "marker_calcium_result",
+                                  "marker_creatinie_result",
+                                  "practicetype", "Deletion.13q", 
+                                  "Ploidy","OS","event")
+
+# # data imputation
+# 22 imputated datasets, random seed set into "123"
+imputated_data <- mice(os_data_2,method =c("polyreg"), m =22, seed =123)
+imputed_list <- complete(imputated_data, action = "all",include =TRUE)
+races_to_keep <- c("White", "African American" )
+filtered_imputed_list <- lapply(imputed_list, function(df){
+  df_filtered <- df[df$combined_race_ethnicity %in% races_to_keep,]
+  df_filtered <- df_filtered %>% mutate(treatment = 
+                                          ifelse(combined_race_ethnicity 
+                                                 == "White",0,1))
+  return(df_filtered)
+})
+
+# To view
+filtered_imputed_list[[22]]
+sum(filtered_imputed_list[[22]]$combined_race_ethnicity == "African American")
+sum(filtered_imputed_list[[22]]$combined_race_ethnicity == "White")
+
+```
+
+```{r}
+missing_idx <- which(is.na(os_data_2$combined_race_ethnicity))
+length(missing_idx)  # Total number of NAs to check against
+
+# Extract imputed race/ethnicity values at the missing positions across 22 datasets
+imputed_values <- sapply(imputed_list, 
+                         function(df) df$combined_race_ethnicity[missing_idx])
+
+# Convert to long format (vector of all imputed values)
+all_imputed_values <- as.vector(imputed_values)
+
+# Tabulate counts of each category
+imputed_counts <- table(all_imputed_values)
+
+# Average across imputations
+avg_counts <- round(imputed_counts / 22, 2)
+
+# Proportions
+total_imputed <- length(missing_idx)
+avg_props <- round(avg_counts / total_imputed, 4)
+
+# Combine into a data frame
+result <- data.frame(
+  Race_Ethnicity = names(avg_counts),
+  Avg_Count_Assigned = as.numeric(avg_counts),
+  Avg_Proportion = as.numeric(avg_props)
+)
+
+print(result)
+```
+
+```{r}
+library(tableone)
+# Calculate SMD for the unmatched data
+for (i in 1:22) { 
+    table1 <- CreateTableOne(vars = vars, strata = "treatment", 
+                             data =  filtered_imputed_list[[i]], test = FALSE, smd = TRUE)
+
+    smd_values <- data.frame(
+      Variable = vars,
+      SMD = ExtractSmd(table1),
+      Imputation = i,
+      stringsAsFactors = FALSE)
+  imputation_results[[i]] <- smd_values
+}
+all_smds <- do.call(rbind, imputation_results)
+
+# Generating proportions 
+library(dplyr)
+proportions_by_variable <- all_smds %>%
+  group_by(Variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+
+# visualization
+ggplot(proportions_by_variable , aes(x=reorder(Variable,
+                                               proportion_exceeding_0.1),
+                                               y =proportion_exceeding_0.1)) +
+  geom_bar(stat = "identity", fill = "steelblue") + labs(
+    title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+    x = "Covariate",
+    y = "Proportions Exceeding 0.1") +
+  theme_minimal() + coord_flip()
+
+
+# average SMDs across imputations for the unmatched data 
+tabUnmatched <- all_smds%>% group_by(Variable) %>%
+  summarise(Mean_SMD = round(mean(X1.vs.2),3)
+            ) %>% arrange(desc(abs(Mean_SMD)))
+print(tabUnmatched)
+
+```
+
+
+# Crude 
+```{r}
+library(broom)
+
+num_imputations <- length(filtered_imputed_list) 
+coef_list <- list() 
+se_list <- list() 
+# Fit Cox model on each imputed dataset 
+for (i in 1:num_imputations) { 
+  cox_model <- coxph(Surv(OS, event) ~ as.factor(treatment),
+                     data = filtered_imputed_list[[i]]) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+} 
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+crude_results <- data.frame( Variable = names(mean_coefs), 
+                             HR = hr_estimates, 
+                             Lower_CI = hr_lower_CI, Upper_CI = 
+                               hr_upper_CI, se =pooled_se , loghr =mean_coefs)
+print(crude_results)
+
+```
+# Covariate Adjustment
+```{r}
+num_imputations <- length(filtered_imputed_list) 
+coef_list <- list() 
+se_list <- list() 
+# Fit Cox model on each imputed dataset 
+for (i in 1:num_imputations) { 
+  cox_model <- coxph(Surv(OS, event) ~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + 
+                 marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy, 
+               data = filtered_imputed_list[[i]]) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+  } 
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+cov_adj_results <- data.frame( Variable = names(mean_coefs),
+                               HR = hr_estimates, 
+                               Lower_CI = hr_lower_CI, 
+                               Upper_CI = hr_upper_CI , 
+                               se =pooled_se , loghr =mean_coefs )
+print(cov_adj_results)
+```
+```{r}
+## Construct a data frame containing variable name and SMD from all methods
+dataPlot <- data.frame(variable   = tabUnmatched$Variable,
+                      Unmatched  = as.numeric(tabUnmatched$Mean_SMD)
+                       )
+
+## Create long-format data for ggplot2
+dataPlotMelt <- melt(data          = dataPlot,
+                     id.vars       = c("variable"),
+                     variable.name = "Method",
+                     value.name    = "SMD")
+
+library(forcats)
+dataPlotMelt$Method <- fct_recode(dataPlotMelt$Method,
+  "Original Data" = "Unmatched"
+)
+
+## Order variable names by magnitude of SMD
+varNames <- as.character(dataPlot$variable)[order(dataPlot$Unmatched,
+                                                  decreasing = FALSE)]
+
+## Order factor levels in the same order
+dataPlotMelt$variable <- factor(dataPlotMelt$variable,
+                                levels = varNames)
+```
+
+# Nerest Neighbor Matching - With Caliper 
+
+```{r}
+imputation_results <- list()
+coef_list <- list()
+se_list <- list()
+matching_summary <- list() 
+
+for (i in 1:22) { 
+  # Step 1: Fit a logistic regression PS model to get logit(PS)
+ps_model <- glm(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+data = filtered_imputed_list[[i]],
+family = binomial)
+
+# Calculate logit(PS) and dynamic caliper
+logit_ps <- predict(ps_model, type = "link")
+caliper_val <- 0.2 * sd(logit_ps, na.rm = TRUE)
+
+# Step 2: Perform nearest neighbor matching using calculated caliper
+ps_strata <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+data = filtered_imputed_list[[i]],
+method = "nearest",
+distance = "glm",
+caliper = caliper_val)
+
+# Store weights for later analysis
+imputed_subset <- filtered_imputed_list[[i]]
+imputed_subset$weights <- ps_strata$weights
+
+# Identify matched vs. unmatched
+imputed_subset$matched <- ifelse(imputed_subset$weights > 0, 1, 0)
+
+# Group-level summary for reporting
+match_group_summary <- imputed_subset %>%
+group_by(treatment) %>%
+summarise(
+Original_N = n(),
+Matched_N = sum(matched),
+Excluded_N = sum(matched == 0),
+Prop_Excluded = mean(matched == 0),
+.groups = "drop") %>%
+  mutate(Imputation = i)
+
+matching_summary[[i]] <- match_group_summary
+  match.data <- match.data(ps_strata)
+  ps_df <- data.frame(
+  ePS = ps_strata$distance,
+  treatment = imputed_subset$treatment,
+  imputation = i
+)
+
+# Save to a list or bind all iterations
+if (i == 1) {
+  all_eps <- ps_df
+} else {
+  all_eps <- rbind(all_eps, ps_df)
+}
+  
+  table1 <- CreateTableOne(vars = vars, strata = "treatment", 
+                           data = match.data, test = FALSE, smd = TRUE)
+    
+  smd_values <- data.frame(
+      Variable = vars,
+      SMD = ExtractSmd(table1),
+      Imputation = i,
+      stringsAsFactors = FALSE)
+    
+  imputation_results[[i]] <- smd_values
+  
+  # HR estimates
+   cox_model <- coxph(Surv(OS, event) ~ as.factor(treatment), data =  match.data) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+}
+
+all_smds <- do.call(rbind, imputation_results)
+
+# generating proportions 
+library(dplyr)
+proportions_by_variable <- all_smds %>%
+  group_by(Variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+
+# visualization
+ggplot(proportions_by_variable , 
+       aes(x=reorder(Variable,proportion_exceeding_0.1),
+                                               y =proportion_exceeding_0.1)) +
+  geom_bar(stat = "identity", fill = "steelblue") + 
+  labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+       x = "Covariate",
+       y = "Proportions Exceeding 0.1") +
+  theme_minimal() + coord_flip()
+
+desired_order <- dataPlotMelt$variable 
+
+# average SMDs across imputations
+smd_avg_nn0.1_1<- all_smds%>% group_by(Variable) %>%
+  summarise(Mean_SMD = round(mean(X1.vs.2),3)
+            ) %>% arrange(desc(abs(Mean_SMD)))
+
+smd_avg_nn0.1_1$Variable <- factor(smd_avg_nn0.1_1$Variable, 
+                                   levels = desired_order)
+smd_avg_nn0.1_1 <- smd_avg_nn0.1_1 %>% arrange(Variable)
+
+all_smds_2 <- all_smds %>% left_join(smd_avg_nn0.1_1, by = "Variable")
+all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+
+all_smds_3$Variable <- fct_recode(all_smds_3$Variable,
+  "SES Quintile" = "sesindex2015_2019",
+  "Sex at Birth" = "gender",
+  "Age at 1L Treatment" = "age_group",
+  "Site of Care" = "practicetype",
+  "Year of Diagnosis" = "year_diag_group",
+  "Deletion 13q" = "Deletion.13q",
+  "Anemia" = "hemoglobin",
+  "ISS Stage" = "issstage",
+  "ASCT" = "asct",
+  "Cytogenetic Risk Group" = "risk_group",
+  "Hypercalcemia" = "marker_calcium_result",
+  "Ploidy" = "Ploidy",
+  "ECOG Performance Status" = "combined_ecog",
+  "Renal Insufficiency" = "marker_creatinie_result"
+)
+
+#overall
+a <- ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  
+  labs(x="SMD",y = "Coavariate") + theme_minimal() + 
+  geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), 
+                y = reorder(Variable,proportion_exceeding_0.1),  
+                label =  round(proportion_exceeding_0.1,2)))
+
+ggsave("African American_NNM02_SMD_Prop.png", a, width = 8, height = 6)
+
+#overall
+ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  
+  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") +theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), 
+                                  y = reorder(Variable,
+                                              proportion_exceeding_0.1),  
+                                  label =  round( proportion_exceeding_0.1,2)))
+
+library(ggplot2)
+all_eps$treatment <- factor(all_eps$treatment, 
+                            levels = c(0, 1), 
+                            labels = c("White", "African American"))
+
+my_plot <- ggplot(all_eps, aes(x = ePS, fill = as.factor(treatment))) +
+  geom_density(alpha = 0.4) +
+  labs(x = "Estimated Propensity Score", fill = "Race/Ethnicity") +
+  theme_minimal()
+
+saveRDS(my_plot, "African American_density.rds")
+
+my_plot <- ggplot(all_eps, aes(x = as.factor(treatment), 
+                               y = ePS, fill = as.factor(treatment))) +
+  geom_boxplot() +
+  labs(x = "Race/Ethnicity", y = "Estimated Propensity Score", 
+       fill = "Race/Ethnicity") +
+  theme_minimal()
+
+saveRDS(my_plot, "African American_boxplot.rds")
+
+
+library(dplyr)
+avg_eps <- all_eps %>%
+  group_by(imputation, treatment) %>%
+  summarise(mean_eps = mean(ePS, na.rm = TRUE)) %>%
+  group_by(treatment) %>%
+  summarise(average_eps = mean(mean_eps))
+print(avg_eps)
+
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+nn_0.1_results <- data.frame( Variable = names(mean_coefs),
+                              HR = hr_estimates, Lower_CI = hr_lower_CI, 
+                              Upper_CI = hr_upper_CI, se =pooled_se , 
+                              loghr =mean_coefs )
+print(nn_0.1_results)
+
+match_stats_grouped <- bind_rows(matching_summary)
+match_summary_by_group_nnmcaliper <- match_stats_grouped %>%
+  group_by(treatment) %>%
+  summarise(
+    Avg_Original_N = mean(Original_N),
+    Avg_Matched_N = mean(Matched_N),
+    Avg_Excluded_N = mean(Excluded_N),
+    Avg_Prop_Excluded = mean(Prop_Excluded)
+  )
+
+print(match_summary_by_group_nnmcaliper)
+``` 
+```{r}
+imputation_results <- list()
+coef_list <- list()
+se_list <- list()
+ps_all <- list()
+for (i in 1:22) { 
+ imputed_subset <- filtered_imputed_list[[i]]
+  ps_strata <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + 
+                 marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               filtered_imputed_list[[i]],
+              method = "nearest",
+                    caliper = 0.1, 
+               distance = "glm")
+  match.data <- match.data(ps_strata)
+   ps_df <- data.frame(
+    ps = match.data$distance,
+    treatment = match.data$treatment,
+    imputation = i
+)
+
+ps_all[[i]] <- ps_df
+  
+  table1 <- CreateTableOne(vars = vars, strata = 
+                             "treatment", data = match.data, 
+                           test = FALSE, smd = TRUE)
+    
+  smd_values <- data.frame(
+      Variable = vars,
+      SMD = ExtractSmd(table1),
+      Imputation = i,
+      stringsAsFactors = FALSE)
+    
+  imputation_results[[i]] <- smd_values
+  # HR estimates
+   cox_model <- coxph(Surv(OS, event) ~ as.factor(treatment), data =  match.data) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+}
+
+
+ps_combined <- bind_rows(ps_all)
+ps_combined$treatment <- factor(ps_combined$treatment, levels = c(0, 1), 
+                                labels = c("White", "African American"))
+
+
+plot_nnm0.1 <-  ggplot(ps_combined, aes(x = ps, fill =as.factor(treatment))) +
+geom_density(alpha = 0.6) + scale_fill_manual(values = c("White" = "blue", "African American" = "pink")) + 
+labs(x = "PS",
+     fill ="Race/Ethnicity") +
+theme_minimal() + theme(legend.position = "none")
+print(plot_nnm0.1)
+saveRDS(plot_nnm0.1, "African American_NNM_0.1_PS.rds")
+```
+
+# Nerest Neighbor Matching - Without Caliper
+```{r}
+# create a vector of covariates 
+vars <- c( "gender", "age_group", "combined_ecog", "issstage", 
+           "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", 
+          "hemoglobin","marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy")
+
+```
+
+```{r}
+imputation_results <- list()
+coef_list <- list()
+se_list <- list()
+matching_summary <- list()
+ps_density_list <- list()
+
+for (i in 1:22) { 
+ imputed_subset <- filtered_imputed_list[[i]]
+  ps_strata <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               filtered_imputed_list[[i]],
+              method = "nearest",
+               distance = "glm")
+imputed_subset$weights <- ps_strata$weights
+# Estimate PS before matching
+ps_model <- glm(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+data = imputed_subset, family = binomial())
+
+imputed_subset$ps <- predict(ps_model, type = "response")
+
+ps_density_list[[i]] <- imputed_subset %>%
+dplyr::select(ps, treatment) %>% 
+dplyr::mutate(imputation = i)
+
+# Label matched (weights > 0) vs. unmatched
+imputed_subset$matched <- ifelse(imputed_subset$weights > 0, 1, 0)
+
+# Group-level summary
+match_group_summary <- imputed_subset %>%
+  group_by(treatment) %>%  
+  summarise(
+    Original_N = n(),
+    Matched_N = sum(matched),
+    Excluded_N = sum(matched == 0),
+    Prop_Excluded = mean(matched == 0),
+    .groups = "drop"
+  ) %>%
+  mutate(Imputation = i)
+
+matching_summary[[i]] <- match_group_summary
+  match.data <- match.data(ps_strata)
+   ps_df <- data.frame(
+    ps = match.data$distance,
+    treatment = match.data$treatment,
+    imputation = i
+)
+
+ps_all[[i]] <- ps_df
+  
+  
+table1 <- CreateTableOne(vars = vars, strata = "treatment", data = match.data, test = FALSE, smd = TRUE)
+    
+smd_values <- data.frame(
+      Variable = vars,
+      SMD = ExtractSmd(table1),
+      Imputation = i,
+      stringsAsFactors = FALSE)
+    
+  imputation_results[[i]] <- smd_values
+  
+  # HR estimates
+   cox_model <- coxph(Surv(OS, event) ~ as.factor(treatment), data =  match.data) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+}
+
+all_smds <- do.call(rbind, imputation_results)
+
+# generating proportions 
+library(dplyr)
+proportions_by_variable <- all_smds %>%
+  group_by(Variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+
+# visualization
+ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+                                               y =proportion_exceeding_0.1)) +
+  geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+                                                         x = "Covariate",
+                                                         y = "Proportions Exceeding 0.1") +
+  theme_minimal() + coord_flip()
+
+# average SMDs across imputations
+tabMatched_nn<- all_smds%>% group_by(Variable) %>%
+  summarise(Mean_SMD = round(mean(X1.vs.2),3)
+            ) %>% arrange(desc(abs(Mean_SMD)))
+print(tabMatched_nn)
+
+tabMatched_nn$Variable <- factor(tabMatched_nn$Variable, levels = desired_order)
+tabMatched_nn <- tabMatched_nn %>% arrange(Variable)
+
+all_smds_2 <- all_smds %>% left_join(smd_avg_nn0.1_1, by = "Variable")
+all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+
+all_smds_3$Variable <- fct_recode(all_smds_3$Variable,
+  "SES Quintile" = "sesindex2015_2019",
+  "Sex at Birth" = "gender",
+  "Age at 1L Treatment" = "age_group",
+  "Site of Care" = "practicetype",
+  "Year of Diagnosis" = "year_diag_group",
+  "Deletion 13q" = "Deletion.13q",
+  "Anemia" = "hemoglobin",
+  "ISS Stage" = "issstage",
+  "ASCT" = "asct",
+  "Cytogenetic Risk Group" = "risk_group",
+  "Hypercalcemia" = "marker_calcium_result",
+  "Ploidy" = "Ploidy",
+  "ECOG Performance Status" = "combined_ecog",
+  "Renal Insufficiency" = "marker_creatinie_result"
+)
+
+#overall
+a <- ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round(proportion_exceeding_0.1,2)))
+
+
+ggsave("African American_NNM_SMD_Prop.png", a, width = 8, height = 6)
+
+#overall
+ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+nn_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI, se =pooled_se , loghr =mean_coefs  )
+print(nn_results)
+
+
+ps_combined <- bind_rows(ps_all)
+ps_combined$treatment <- factor(ps_combined$treatment, levels = c(0, 1), labels = c("White", "African American"))
+
+
+plot_nnm <-  ggplot(ps_combined, aes(x = ps, fill =as.factor(treatment))) +
+geom_density(alpha = 0.6) + scale_fill_manual(values = c("White" = "blue", "African American" = "pink")) + 
+labs(x = "PS",
+     fill ="Race/Ethnicity") +
+theme_minimal() + theme(legend.position = "none")
+print(plot_nnm)
+
+saveRDS(plot_nnm, "African American_NNM_PS.rds")
+
+library(dplyr)
+
+match_stats_grouped <- bind_rows(matching_summary)
+
+match_summary_by_group_nnm <- match_stats_grouped %>%
+  group_by(treatment) %>%
+  summarise(
+    Avg_Original_N = mean(Original_N),
+    Avg_Matched_N = mean(Matched_N),
+    Avg_Excluded_N = mean(Excluded_N),
+    Avg_Prop_Excluded = mean(Prop_Excluded)
+  )
+
+print(match_summary_by_group_nnm)
+ps_density_data <- bind_rows(ps_density_list)
+ps_density_data$treatment <- factor(ps_density_data$treatment, levels = c(0, 1), labels = c("White", "African American"))
+
+
+p <- ggplot(ps_density_data, aes(x = ps, fill = as.factor(treatment))) + # Replace with your group var
+geom_density(alpha = 0.6)+ scale_fill_manual(values = c("White" = "blue", "African American" = "pink")) +labs(x = "PS",
+y = "Density", fill = "Race/Ethnicity") + theme_minimal() 
+
+
+saveRDS(p, "African American_unmatched_ps.rds")
+``` 
+
+# Optimal Matching 
+```{r}
+# create a vector of covariates 
+vars <- c( "gender", "age_group", "combined_ecog", "issstage", "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", "hemoglobin","marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy")
+```
+
+```{r}
+imputation_results <- list()
+matching_summary <- list()
+coef_list <- list()
+se_list <- list()
+for (i in 1:22) { 
+ imputed_subset <- filtered_imputed_list[[i]]
+  ps_strata <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               filtered_imputed_list[[i]],
+              method = "optimal",
+               distance = "glm")
+imputed_subset$weights <- ps_strata$weights
+
+# Label matched (weights > 0) vs. unmatched
+imputed_subset$matched <- ifelse(imputed_subset$weights > 0, 1, 0)
+
+# Group-level summary
+match_group_summary <- imputed_subset %>%
+  group_by(treatment) %>%  
+  summarise(
+    Original_N = n(),
+    Matched_N = sum(matched),
+    Excluded_N = sum(matched == 0),
+    Prop_Excluded = mean(matched == 0),
+    .groups = "drop"
+  ) %>%
+  mutate(Imputation = i)
+
+matching_summary[[i]] <- match_group_summary
+  # summary(ps_strata, subclass = TRUE)
+  match.data <- match.data(ps_strata) 
+   ps_df <- data.frame(
+    ps = match.data$distance,
+    treatment = match.data$treatment,
+    imputation = i
+)
+
+ps_all[[i]] <- ps_df
+  
+table1 <- CreateTableOne(vars = vars, strata = "treatment", data = match.data, test = FALSE, smd = TRUE)
+    
+smd_values <- data.frame(
+      Variable = vars,
+      SMD = ExtractSmd(table1),
+      Imputation = i,
+      stringsAsFactors = FALSE)
+    
+  imputation_results[[i]] <- smd_values
+  
+  # HR estimates
+   cox_model <- coxph(Surv(OS, event) ~ as.factor(treatment), data =  match.data) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+}
+
+all_smds <- do.call(rbind, imputation_results)
+
+# generating proportions 
+library(dplyr)
+proportions_by_variable <- all_smds %>%
+  group_by(Variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+
+# visualization
+ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+                                               y =proportion_exceeding_0.1)) +
+  geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+                                                         x = "Covariate",
+                                                         y = "Proportions Exceeding 0.1") +
+  theme_minimal() + coord_flip()
+
+# average SMDs across imputations
+tabMatched_optimal_1<- all_smds%>% group_by(Variable) %>%
+  summarise(Mean_SMD = round(mean(X1.vs.2),3)
+            ) %>% arrange(desc(abs(Mean_SMD)))
+tabMatched_optimal_1$Variable <- factor(tabMatched_optimal_1$Variable, levels = desired_order)
+tabMatched_optimal_1 <- tabMatched_optimal_1 %>% arrange(Variable)
+print(tabMatched_optimal_1)
+
+
+all_smds_2 <- all_smds %>% left_join(smd_avg_nn0.1_1, by = "Variable")
+all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+
+
+all_smds_3$Variable <- fct_recode(all_smds_3$Variable,
+  "SES Quintile" = "sesindex2015_2019",
+  "Sex at Birth" = "gender",
+  "Age at 1L Treatment" = "age_group",
+  "Site of Care" = "practicetype",
+  "Year of Diagnosis" = "year_diag_group",
+  "Deletion 13q" = "Deletion.13q",
+  "Anemia" = "hemoglobin",
+  "ISS Stage" = "issstage",
+  "ASCT" = "asct",
+  "Cytogenetic Risk Group" = "risk_group",
+  "Hypercalcemia" = "marker_calcium_result",
+  "Ploidy" = "Ploidy",
+  "ECOG Performance Status" = "combined_ecog",
+  "Renal Insufficiency" = "marker_creatinie_result"
+)
+
+#overall
+a <- ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round(proportion_exceeding_0.1,2)))
+
+ggsave("African American_optimal_SMD_Prop.png", a, width = 8, height = 6)
+
+#overall
+ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+optimal_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI, se =pooled_se , loghr =mean_coefs  )
+print(optimal_results)
+
+
+ps_combined <- bind_rows(ps_all)
+ps_combined$treatment <- factor(ps_combined$treatment, levels = c(0, 1), labels = c("White", "African American"))
+
+
+plot_optimal<-  ggplot(ps_combined, aes(x = ps, fill =as.factor(treatment))) +
+geom_density(alpha = 0.6) + scale_fill_manual(values = c("White" = "blue", "African American" = "pink")) +
+  labs(x = "PS",
+     fill ="Race/Ethnicity") +
+  theme_minimal() + theme(legend.position = "none")
+print(plot_optimal)
+saveRDS(plot_optimal, "African American_optimal_PS.rds")
+library(dplyr)
+
+match_stats_grouped <- bind_rows(matching_summary)
+
+match_summary_by_group_optimal <- match_stats_grouped %>%
+  group_by(treatment) %>%
+  summarise(
+    Avg_Original_N = mean(Original_N),
+    Avg_Matched_N = mean(Matched_N),
+    Avg_Excluded_N = mean(Excluded_N),
+    Avg_Prop_Excluded = mean(Prop_Excluded)
+  )
+
+print(match_summary_by_group_optimal)
+``` 
+
+
+#IPTW (without trimming) - for SMD calculations as it is the same as stabilized iptw
+```{r}
+library(survey)
+imputation_results <- list()
+for (i in 1:22) { 
+ dat <- filtered_imputed_list[[i]]
+dat$gender <- as.factor(dat$gender)
+dat$treatment<- as.factor(dat$treatment)
+ps_model <- glm(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+              dat, family = binomial())
+
+dat$pscore <- predict(ps_model, type="response")
+dat$ps_weights <- ifelse(dat$treatment == 1, 1/dat$pscore, 1/(1-dat$pscore))
+design <- svydesign(ids = ~1, data =dat, weights = ~ps_weights)
+
+    table1 <- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+    
+    smd_values <- data.frame(
+      Variable = vars,
+      SMD = ExtractSmd(table1),
+      Imputation = i,
+      stringsAsFactors = FALSE)
+    
+    print(summary(dat$ps_weights))
+    plot(dat$ps_weights)
+  imputation_results[[i]] <- smd_values
+}
+all_smds <- do.call(rbind, imputation_results)
+
+# generating proportions 
+library(dplyr)
+proportions_by_variable <- all_smds %>%
+  group_by(Variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+
+# visualization
+ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+                                               y =proportion_exceeding_0.1)) +
+  geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+                                                         x = "Covariate",
+                                                         y = "Proportions Exceeding 0.1") +
+  theme_minimal() + coord_flip()
+
+# average SMDs across imputations
+smd_avg_iptw_1 <- all_smds%>% group_by(Variable) %>%
+  summarise(Mean_SMD = round(mean(X1.vs.2),3)
+            ) %>% arrange(desc(abs(Mean_SMD)))
+smd_avg_iptw_1$Variable <- factor(smd_avg_iptw_1$Variable, levels = desired_order)
+smd_avg_iptw_1 <- smd_avg_iptw_1 %>% arrange(Variable)
+print(smd_avg_iptw_1)
+
+all_smds_2 <- all_smds %>% left_join(smd_avg_iptw_1, by = "Variable")
+all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+
+all_smds_3$Variable <- fct_recode(all_smds_3$Variable,
+  "SES Quintile" = "sesindex2015_2019",
+  "Sex at Birth" = "gender",
+  "Age at 1L Treatment" = "age_group",
+  "Site of Care" = "practicetype",
+  "Year of Diagnosis" = "year_diag_group",
+  "Deletion 13q" = "Deletion.13q",
+  "Anemia" = "hemoglobin",
+  "ISS Stage" = "issstage",
+  "ASCT" = "asct",
+  "Cytogenetic Risk Group" = "risk_group",
+  "Hypercalcemia" = "marker_calcium_result",
+  "Ploidy" = "Ploidy",
+  "ECOG Performance Status" = "combined_ecog",
+  "Renal Insufficiency" = "marker_creatinie_result"
+)
+
+#overall
+a <- ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round(proportion_exceeding_0.1,2)))
+
+ggsave("African American_SIPTW_SMD_Prop.png", a, width = 8, height = 6)
+
+
+#overall
+ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+```
+
+#IPTW (with trimming)
+
+```{r}
+imputation_results <- list()
+coef_list <- list()
+se_list <- list()
+trim_summary <- list()
+for (i in 1:22) { 
+  dat <- filtered_imputed_list[[i]]
+  dat$gender <- as.factor(dat$gender)
+  dat$treatment<- as.factor(dat$treatment)
+  ps_model <- glm(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+              dat, family = binomial())
+  dat$pscore <- predict(ps_model, type="response")
+  dat$ps_weights_2 <- ifelse(dat$treatment == 1, 1/dat$pscore, 1/(1-dat$pscore))
+
+  # apply trimming to weights
+  lower_threshold <- quantile(dat$ps_weights_2 ,0.05)
+  upper_threshold <- quantile(dat$ps_weights_2 ,0.95)
+  dat$trimmed_out <- !(dat$ps_weights_2 >= lower_threshold & dat$ps_weights_2 <= upper_threshold)
+  aa_data_trimmed <- dat %>% filter(ps_weights_2  >=lower_threshold & 
+                                        ps_weights_2  <= upper_threshold)
+  # Group-level summary of trimming
+trim_group_summary <- dat %>%
+  group_by(treatment) %>%  
+  summarise(
+    Original_N = n(),
+    Trimmed_N = sum(trimmed_out),
+    Retained_N = n() - sum(trimmed_out),
+    Prop_Trimmed = mean(trimmed_out),
+    .groups = "drop"
+  ) %>%
+  mutate(Imputation = i)
+
+trim_summary[[i]] <- trim_group_summary
+
+  design <- svydesign(ids = ~1, data =aa_data_trimmed , weights = ~ps_weights_2 )
+
+  table1 <- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+    
+  smd_values <- data.frame(
+      Variable = vars,
+      SMD = ExtractSmd(table1),
+      Imputation = i,
+      stringsAsFactors = FALSE)
+    
+  imputation_results[[i]] <- smd_values
+  
+  # HR estimates
+  cox_model <- coxph(Surv(OS, event) ~ as.factor(treatment), data =aa_data_trimmed, weights = ps_weights_2) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+  
+    all_weights_df[[i]] <- data.frame(
+    id = 1:nrow(aa_data_trimmed),
+    weight = aa_data_trimmed$ps_weights_2,
+    treatment = aa_data_trimmed$treatment)
+    
+  
+}
+
+library(dplyr)
+
+trim_stats_grouped <- bind_rows(trim_summary)
+
+trim_summary_by_group <- trim_stats_grouped %>%
+  group_by(treatment) %>%
+  summarise(
+    Avg_Original_N = mean(Original_N),
+    Avg_Retained_N = mean(Retained_N),
+    Avg_Trimmed_N = mean(Trimmed_N),
+    Avg_Prop_Trimmed = mean(Prop_Trimmed)
+  )
+
+print(trim_summary_by_group)
+
+all_smds <- do.call(rbind, imputation_results)
+
+# generating proprotions 
+library(dplyr)
+proportions_by_variable <- all_smds %>%
+  group_by(Variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+
+# visualization
+ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+                                               y =proportion_exceeding_0.1)) +
+  geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+                                                         x = "Covariate",
+                                                         y = "Proportions Exceeding 0.1") +
+  theme_minimal() + coord_flip()
+
+# average SMDs across imputations
+iptw_trimmed_1 <- all_smds%>% group_by(Variable) %>%
+  summarise(Mean_SMD = round(mean(X1.vs.2),3)
+            ) %>% arrange(desc(abs(Mean_SMD)))
+iptw_trimmed_1$Variable <- factor(iptw_trimmed_1$Variable, levels = desired_order)
+iptw_trimmed_1  <- iptw_trimmed_1  %>% arrange(Variable)
+print(iptw_trimmed_1)
+
+all_smds_2 <- all_smds %>% left_join(iptw_trimmed_1, by = "Variable")
+all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+
+all_smds_3$Variable <- fct_recode(all_smds_3$Variable,
+  "SES Quintile" = "sesindex2015_2019",
+  "Sex at Birth" = "gender",
+  "Age at 1L Treatment" = "age_group",
+  "Site of Care" = "practicetype",
+  "Year of Diagnosis" = "year_diag_group",
+  "Deletion 13q" = "Deletion.13q",
+  "Anemia" = "hemoglobin",
+  "ISS Stage" = "issstage",
+  "ASCT" = "asct",
+  "Cytogenetic Risk Group" = "risk_group",
+  "Hypercalcemia" = "marker_calcium_result",
+  "Ploidy" = "Ploidy",
+  "ECOG Performance Status" = "combined_ecog",
+  "Renal Insufficiency" = "marker_creatinie_result"
+)
+
+#overall
+a <- ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round(proportion_exceeding_0.1,2)))
+
+
+ggsave("African American_IPTWTRIM_SMD_Prop.png", a, width = 8, height = 6)
+
+
+#overall
+ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+iptw_trimming_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI, se =pooled_se , loghr =mean_coefs  )
+print(iptw_trimming_results)
+
+# Bind all imputations together
+combined_df <- bind_rows(all_weights_df, .id = "imp")
+
+# Compute average weight per individual across imputations
+avg_weights_df <- combined_df %>%
+  group_by(id, treatment) %>%
+  summarise(avg_weight = mean(weight, na.rm = TRUE), .groups = "drop")
+avg_weights_df$treatment <- factor(avg_weights_df $treatment, levels = c(0, 1), labels = c("White", "African American"))
+
+ggplot(avg_weights_df, aes(x = as.factor(treatment), y = avg_weight)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(
+       x = "Race/Ethnicity Group",
+       y = "Average Stablized Weight") +theme_minimal()
+
+plot_trimming_iptw <- ggplot(avg_weights_df, aes(x = avg_weight,fill = as.factor(treatment))) +
+  geom_density(alpha = 0.6) + scale_fill_manual(values = c("White" = "blue", "African American" = "pink")) + 
+  labs(
+       x = "IPTW Weight", y = "Frequency",fill ="Race/Ethnicity") + theme_minimal() + theme(legend.position = "none")
+
+saveRDS(plot_trimming_iptw, "African American_trimming.rds")
+
+```
+
+#IPTW (stablized)
+```{r}
+imputation_results <- list()
+coef_list <- list()
+se_list <- list()
+all_weights_df <- list()
+
+for (i in 1:22) { 
+ imputed_subset <- filtered_imputed_list[[i]]
+ ps_model <- glm(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+              imputed_subset, family = binomial())
+ imputed_subset$pscore <- predict(ps_model, type="response")
+ p_exposure <- mean(imputed_subset$treatment==1)
+ p_non_exposure <- 1-p_exposure
+
+ imputed_subset$ps_weights_3 <- ifelse(imputed_subset$treatment == 1, 
+                           p_exposure/imputed_subset$pscore, 
+                           p_non_exposure/(1-imputed_subset$pscore))
+  # HR estimates
+  cox_model <- coxph(Surv(OS, event) ~ as.factor(treatment), data =  imputed_subset, weights = ps_weights_3) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+  
+  
+  all_weights_df[[i]] <- data.frame(
+    id = 1:nrow(imputed_subset),
+    weight = imputed_subset$ps_weights_3,
+    treatment = imputed_subset$treatment
+  )
+  
+}
+
+# Bind all imputations together
+combined_df <- bind_rows(all_weights_df, .id = "imp")
+
+# Compute average weight per individual across imputations
+avg_weights_df <- combined_df %>%
+  group_by(id, treatment) %>%
+  summarise(avg_weight = mean(weight, na.rm = TRUE), .groups = "drop")
+avg_weights_df$treatment <- factor(avg_weights_df $treatment, levels = c(0, 1), labels = c("White", "African American"))
+
+ggplot(avg_weights_df, aes(x = as.factor(treatment), y = avg_weight)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Average Stabilized IPTW Weights by Race/Ethnicity",
+       x = "Treatment Group",
+       y = "Average Weight") +theme_minimal()
+
+plot_sta_iptw <- ggplot(avg_weights_df, aes(x = avg_weight, fill =as.factor(treatment))) +
+  geom_density(alpha = 0.6) + scale_fill_manual(values = c("White" = "blue", "African American" = "pink")) + 
+  labs(
+       x = "IPTW Stabilized Weight", y = "Frequency", fill ="Race/Ethnicity") + theme_minimal()+ theme(legend.position = "none") 
+
+saveRDS(plot_sta_iptw, "African American_sta_iptw.rds")
+
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+stablized_iptw_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI, se =pooled_se , loghr =mean_coefs  )
+print(stablized_iptw_results)
+
+```
+
+# PS as an Additional Covariate
+```{r}
+num_imputations <- length(filtered_imputed_list) 
+coef_list <- list() 
+se_list <- list() 
+for (i in 1:num_imputations) { 
+  ps_model <- glm(treatment ~ age_group +
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+             filtered_imputed_list[[i]], family = binomial())
+  filtered_imputed_list[[i]]$pscore <- predict(ps_model, type="response")
+
+  cox_model <- coxph(Surv(OS, event) ~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy +pscore, data = filtered_imputed_list[[i]]) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+  } 
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+doubly_robust_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI, se =pooled_se , loghr =mean_coefs  )
+print(doubly_robust_results)
+```
+
+
+# PS stratification
+
+```{r}
+num_imputations <- length(filtered_imputed_list) 
+ate_results <- list() 
+att_results <- list()
+ps_by_stratum_group_all <- list()
+
+for (i in 1:num_imputations) { 
+  imputed_subset <- filtered_imputed_list[[i]] 
+  
+  # Step 1: Estimate propensity scores 
+  ps_model <- glm(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+              imputed_subset, family = binomial())
+  
+  imputed_subset$ps <- predict(ps_model, type = "response") 
+  
+  # Step 2: Create 5 strata based on quintiles 
+  imputed_subset$strata <- cut(imputed_subset$ps, breaks = quantile(imputed_subset$ps, probs = seq(0, 1, 0.2), na.rm = TRUE), include.lowest = TRUE, labels = FALSE) 
+# Summarize by stratum and group
+ps_by_stratum_group_all[[i]] <- imputed_subset %>%
+dplyr::group_by(strata, treatment) %>% # Replace `group` with your variable, e.g., race
+dplyr::summarize(mean_ps = mean(ps, na.rm = TRUE), .groups = 'drop') %>%
+dplyr::mutate(imputation = i)
+
+  # Step 3: Calculate strata weights 
+  strata_counts <- imputed_subset %>% 
+    group_by(strata) %>% 
+    summarise(n_treated  = sum(treatment == 1), 
+              n_control = sum(treatment == 0), 
+              n_total = n()) 
+  
+  # Step 4: Fit Cox models within each stratum and extract HR and SE 
+  stratum_results <- list() 
+  
+  for (s in unique(imputed_subset$strata)) { 
+    stratum_data <- imputed_subset %>% filter(strata == s) 
+    
+    # Cox model for ATE (all subjects) 
+    cox_model <-coxph(Surv(OS, event) ~ as.factor(treatment), data = stratum_data) 
+    
+    # Extract log HR and SE
+    hr <- exp(coef(cox_model)[1])
+    se <- sqrt(diag(vcov(cox_model))[1])
+    
+    stratum_results[[s]] <- data.frame(
+      Stratum = s, 
+      HR = hr,
+      logHR = log(hr),
+      SE = se,
+      Treated = strata_counts$n_treated[s],
+      Total = strata_counts$n_total[s]
+      
+    )
+
+  }
+    stratum_df <- do.call(rbind, stratum_results)
+    # Step 5: Calculate pooled ATE and ATT using stratum sample sizes 
+    
+    # ATE: Weighted by total stratum size (treated + control) 
+    ate_log_hr <- sum(stratum_df$Total * stratum_df$logHR) / sum(stratum_df$Total) 
+    ate_var <- sum((stratum_df$Total^2 * stratum_df$SE^2)) / (sum(stratum_df$Total)^2) 
+    ate_se <- sqrt(ate_var) 
+    
+    # ATT: Weighted by number of treated units 
+    att_log_hr <- sum(stratum_df$Treated * stratum_df$logHR) / sum(stratum_df$Treated) 
+    att_var <- sum((stratum_df$Treated^2 * stratum_df$SE^2)) / (sum(stratum_df$Treated)^2) 
+    att_se <- sqrt(att_var) 
+    
+    # Store pooled results for each imputation 
+    ate_results[[i]] <- data.frame(LogHR = ate_log_hr, SE = ate_se) 
+    att_results[[i]] <- data.frame(LogHR = att_log_hr, SE = att_se) 
+    
+    imputed_subset$treatment <- factor( imputed_subset$treatment, levels = c(0, 1), labels = c("White", "African American"))
+
+     my_plot <- ggplot(imputed_subset, aes(x = as.factor(strata), y = ps, fill = as.factor(treatment))) +
+        geom_boxplot() + labs(x = "Stratum", y = "Propensity Score") + theme_minimal()+
+        labs(x = "Stratum", fill = "Race/Ethnicity", y = "Estimated Propensity Score")
+     saveRDS(my_plot, "African American_strata.rds")
+
+        } 
+
+
+# Step 6: Pool results across multiple imputations using Rubin's Rules 
+pool_rubin <- function(results_list) { 
+  m <- length(results_list) 
+  logHR_vals <- sapply(results_list, function(x) x$LogHR) 
+  se_vals <- sapply(results_list, function(x) x$SE) 
+  
+  # Calculate pooled log HR
+  pooled_logHR <- mean(logHR_vals) 
+  
+  # Calculate within-imputation variance 
+  within_var <- mean(se_vals^2) 
+  
+  # Calculate between-imputation variance 
+  between_var <- var(logHR_vals) 
+  
+  # Total variance 
+  total_var <- within_var + (1 + (1 / m)) * between_var 
+  
+  # Final pooled SE 
+  pooled_se <- sqrt(total_var) 
+  
+  # Convert log HR back to HR 
+  pooled_hr <- exp(pooled_logHR) 
+  lower_ci <- exp(pooled_logHR - 1.96 * pooled_se) 
+  upper_ci <- exp(pooled_logHR + 1.96 * pooled_se) 
+  
+  return(data.frame( Pooled_HR = pooled_hr, SE = pooled_se, Lower_CI = lower_ci, Upper_CI = upper_ci, se =pooled_se , loghr =pooled_logHR )) } 
+
+# Step 7: Get final pooled results for ATE and ATT 
+final_ate_results <- pool_rubin(ate_results) 
+final_att_results <- pool_rubin(att_results) 
+
+# Print results 
+# cat("Pooled ATE Results:\n") 
+# print(final_ate_results) 
+# 
+# cat("\nPooled ATT Results:\n") 
+# print(final_att_results)
+
+final_ate_results <- final_ate_results %>% rename(HR = Pooled_HR) %>% mutate(Variable = "as.factor(treatment)1")
+final_att_results <- final_att_results %>% rename(HR = Pooled_HR) %>% mutate(Variable = "as.factor(treatment)1")
+
+library(ggplot2)
+ps_summary_group <- dplyr::bind_rows(ps_by_stratum_group_all)
+
+plot <- ggplot(ps_summary_group, aes(x = factor(strata), y = mean_ps, fill = as.factor(treatment))) +
+geom_boxplot(position = position_dodge(width = 0.8)) +
+labs(
+x = "Stratum",
+y = "PS",
+fill = "Race/Ethnicity") +scale_fill_manual(values = c("0" = "blue", "1" = "pink"),
+labels = c("White", "African American")) + theme_minimal()
+
+saveRDS(plot, "African American_PS stratification.rds")
+
+```
+
+```{r}
+# check PH assumptions
+aa_data <- filtered_imputed_list[[22]]
+aa_data <- aa_data %>% mutate(
+  stratum = ntile(pscore,5)
+)
+
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum ==s)
+  cox_model <- coxph(Surv(OS, event) ~ as.factor(treatment), data = stratum_data)
+  print(cox.zph(cox_model))
+}
+
+# covariate balance in each stratum
+stratum_smds <- data.frame(stratum = numeric(),
+                           covariate = character(),
+                           smd = numeric(),
+                           n = numeric())
+for (s in unique(aa_data$stratum)) {
+  stratum_data <- subset(aa_data, stratum ==s)
+  table1 <- CreateTableOne(vars = vars, strata = "treatment", data = stratum_data)
+  smd<- ExtractSmd(table1)
+  stratum_smds <- rbind(stratum_smds,
+                        data.frame(stratum = s,
+                                   variable = vars,
+                                   smd = smd,
+                                   n = nrow(stratum_data)
+                                   ))
+  }
+
+print(stratum_smds)
+
+weighted_smds <- stratum_smds %>% group_by(variable) %>%
+  summarise(weighted_smd = sum(`X1.vs.2`*n)/sum(n))
+
+weighted_smds
+
+weighted_smds$variable <- factor(weighted_smds$variable)
+weighted_smds<- weighted_smds  %>% arrange(variable)
+
+
+```
+
+```{r}
+imputation_results <- list()
+
+for (i in 1:22) {
+cat("Processing imputation", i, "\n")
+
+aa_data <- filtered_imputed_list[[i]]
+# Estimate PS before matching
+ps_model <- glm(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+data = aa_data, family = binomial())
+
+aa_data$ps <- predict(ps_model, type = "response")
+aa_data <- aa_data %>%
+mutate(stratum = ntile(ps, 5))
+stratum_smds <- data.frame()
+
+for (s in unique(aa_data$stratum)) {
+stratum_data <- subset(aa_data, stratum == s)
+
+smd_data <- ExtractSmd(CreateTableOne(vars = vars, strata = "treatment", data = stratum_data, test = FALSE))
+
+# Build stratum-level dataframe
+stratum_smds <- rbind(stratum_smds,
+data.frame(
+stratum = s,
+variable = vars,
+smd = as.numeric(smd_data),
+n = nrow(stratum_data)
+))
+}
+
+# Calculate weighted SMD per variable (NOT collapsed across variables!)
+weighted_smds <- stratum_smds %>%
+group_by(variable) %>%
+summarise(weighted_smd = sum(smd * n) / sum(n), .groups = 'drop')
+
+imputation_results[[i]] <- weighted_smds
+}
+
+# Combine all imputations
+all_smds <- bind_rows(imputation_results, .id = "imputation_id")
+
+# Pool across imputations (Rubin’s averaging)
+pooled_smds <- all_smds %>%
+group_by(variable) %>%
+summarise(
+mean_smd = mean(weighted_smd, na.rm = TRUE),
+sd_smd = sd(weighted_smd, na.rm = TRUE),
+n_imputations = n()
+)
+
+print(pooled_smds)
+
+weighted_smds <- pooled_smds
+weighted_smds  <- weighted_smds %>% rename(weighted_smd = mean_smd)
+desired_order <- dataPlotMelt$variable 
+
+weighted_smds$variable <- factor(weighted_smds$variable, levels = tabUnmatched$Variable)
+weighted_smds<- weighted_smds  %>% arrange(variable)
+
+
+# generating proprotions 
+library(dplyr)
+proportions_by_variable <- all_smds %>%
+  group_by(variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(weighted_smd >0.1)/n()
+  )
+
+print(proportions_by_variable)
+
+
+all_smds_2 <- all_smds %>% left_join(weighted_smds, by = "variable")
+all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "variable")
+
+            
+all_smds_3$variable <- fct_recode(all_smds_3$variable,
+  "SES Quintile" = "sesindex2015_2019",
+  "Sex at Birth" = "gender",
+  "Age at 1L Treatment" = "age_group",
+  "Site of Care" = "practicetype",
+  "Year of Diagnosis" = "year_diag_group",
+  "Deletion 13q" = "Deletion.13q",
+  "Anemia" = "hemoglobin",
+  "ISS Stage" = "issstage",
+  "ASCT" = "asct",
+  "Cytogenetic Risk Group" = "risk_group",
+  "Hypercalcemia" = "marker_calcium_result",
+  "Ploidy" = "Ploidy",
+  "ECOG Performance Status" = "combined_ecog",
+  "Renal Insufficiency" = "marker_creatinie_result"
+)
+
+#overall
+a <- ggplot(all_smds_3, aes(x = weighted_smd.x, y = variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = weighted_smd.y, y = variable), color ="blue", size = 3) +  labs(x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(weighted_smd.x+0.05), y = reorder(variable, proportion_exceeding_0.1),  label =  round(proportion_exceeding_0.1,2)))
+
+ggsave("African American_STRATA_SMD_Prop.png", a, width = 8, height = 6)
+
+```
+
+# Tables
+```{r}
+library(dplyr) 
+library(purrr) 
+
+# Function to extract and combine treatment effect results 
+aggregate_treatment_results <- function(results_list, method_names, treatment_var = "as.factor(treatment)1") 
+{ 
+  # Add method names to each dataframe 
+  named_results <- map2(results_list, method_names, ~mutate(.x, Method = .y)) 
+  # Combine all results into one dataframe 
+  combined_results <- bind_rows(named_results) 
+  # Filter for the treatment variable only 
+  treatment_results <- combined_results %>% 
+    filter(Variable == treatment_var) %>% select(Method, Variable, HR, Lower_CI, Upper_CI, se, loghr) %>% rename( Hazard_Ratio = HR)
+  return(treatment_results) }
+
+```
+
+```{r}
+# List of results from different PS methods 
+results_list <- list(crude_results, 
+                     cov_adj_results, 
+                     nn_results,
+                     nn_0.1_results,
+                     optimal_results,
+                     iptw_trimming_results,
+                     stablized_iptw_results,
+                   #  final_att_results,
+                     final_ate_results,
+                     doubly_robust_results
+                     ) 
+method_names <- c("Crude", 
+                  "Covariate Adjustment", 
+                  "NNM",
+                  "NNM (caliper width = 0.2)",
+                  "Optimal Matching",
+                  "IPTW (5% trimming)",
+                  "Stablized IPTW",
+                 #"PS Stratification (5 strata) - ATT",
+                   "PS Stratification (5 strata)",
+                  "PS as Covariate"
+                  )
+
+c <- aggregate_treatment_results(results_list, method_names)
+c <- c %>% select(Method,Hazard_Ratio, Lower_CI, Upper_CI,se, loghr);
+rownames(c) <- NULL
+
+b <- c
+b$Hazard_Ratio <- round(b$Hazard_Ratio,3)
+b$Lower_CI <- round(b$Lower_CI,3)
+b$Upper_CI <- round(b$Upper_CI,3)
+b$se <- round(b$se,3)
+b$loghr <- round(b$loghr,3)
+b <- b %>%
+  rename(
+    HR = Hazard_Ratio,
+    `95% CI Lower` = Lower_CI,
+    `95% CI Upper` = Upper_CI
+  )
+
+print(b)
+knitr::kable(b, caption = "Hazard Ratios and 95% Confidence Intervals by Method")
+saveRDS(b, "African American_table.rds")
+```
+
+# Forest Plot
+```{r}
+# Define the desired order manually
+desired_order <- c("PS as Covariate",
+                   "PS Stratification (5 strata)",
+                 #  "PS Stratification (5 strata) - ATT",
+                   "Stablized IPTW",
+                   "IPTW (5% trimming)",
+                    "Optimal Matching",
+                   "NNM (caliper width = 0.2)",
+                    "NNM",
+                    "Covariate Adjustment",
+                   "Crude")
+
+# Convert Method column to factor with specified order
+c$Method <- factor(c$Method, levels = desired_order)
+
+my_plot <- ggplot(c,  aes(y = Method, x = Hazard_Ratio)) + geom_point(size = 2, color = "blue") + # Plot HR 
+  geom_errorbarh(aes(xmin = Lower_CI, xmax = Upper_CI), height = 0.2) + # CI lines 
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red", size = 0.8) + # Reference line at HR = 1 
+  labs(title = "Hazard Ratios for White vs. African American ", x = "Hazard Ratio", y = "Method") + coord_cartesian(xlim = c(0.6,1.1)) + theme_minimal()
+
+saveRDS(my_plot, "African American_HR.rds")
+```
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(grid)
+library(knitr)
+library(kableExtra)
+
+# Load and format data
+df <- readRDS("African American_table.rds") %>%
+mutate(
+Method = factor(Method, levels = rev(Method)),
+CI = paste0("[", sprintf("%.2f", `95% CI Lower`), ", ", sprintf("%.2f", `95% CI Upper`), "]"),
+HR_label = sprintf("%.2f", HR)
+)
+
+# Store y-axis levels
+y_levels <- levels(df$Method)
+n <- nrow(df)
+
+# Table plot
+table_plot <- ggplot(df, aes(y = Method)) +
+geom_label(aes(x = 1, label = Method), hjust = 0, fill = NA, label.size = 0, size = 3.2, lineheight =2) +
+geom_label(aes(x = 3.2, label = HR_label), hjust = 0, fill = NA, label.size = 0, size = 3.2, lineheight =2) +
+geom_label(aes(x = 5.2, label = CI), hjust = 0, fill = NA, label.size = 0, size = 3.2, lineheight =2) +
+
+# Column headers
+annotate("text", x = 1, y = n + 1.8, label = "Method", fontface = "bold", hjust = 0, size = 3.5) +
+annotate("text", x = 3.2, y = n + 1.8, label = "HR", fontface = "bold", hjust = 0, size = 3.5) +
+annotate("text", x = 5.2, y = n + 1.8, label = "95% CI", fontface = "bold", hjust = 0, size = 3.5) +
+
+scale_y_discrete(limits = y_levels) +
+coord_cartesian(ylim = c(0.5, n + 2.2)) +
+xlim(0.5, 6.5) +
+theme_void()
+
+# Forest plot
+forest_plot <- ggplot(df, aes(x = HR, y = Method)) +
+geom_errorbarh(aes(xmin = `95% CI Lower`, xmax = `95% CI Upper`), height = 0.1, color = "gray40") +
+geom_point(shape = 15, size = 3, color = "blue") +
+geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+scale_x_continuous(limits = c(0.8, 1.2)) +
+scale_y_discrete(limits = y_levels) +
+labs(x = "Hazard Ratio (HR) with 95% CI", y = NULL) +
+theme_minimal(base_size = 11) +
+theme(
+axis.text.y = element_blank(),
+axis.ticks.y = element_blank(),
+panel.grid.major.y = element_blank()
+)
+
+# Combine plots
+# final_plot <- (table_plot + forest_plot) +
+# plot_layout(widths = c(3.5, 2)) +
+# plot_annotation(
+# title = "Hazard Ratios for White vs. Hispanic/Latino",
+# theme = theme(
+# plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+# )
+# )
+# 
+# # Display
+# final_plot
+```
+
+```{r}
+library(forestplot)
+library(dplyr)
+library(grid)
+# Create your table data (assuming b is your original data.frame)
+table_data <- data.frame(
+Method = as.character(b$Method),
+HR = sprintf("%.2f", b$HR),
+CI = sprintf("[%.2f, %.2f]", b$`95% CI Lower`, b$`95% CI Upper`)
+)
+
+# Combine HR and CI into one column
+table_data$HR_CI <- paste0(table_data$HR, " ", table_data$CI)
+
+# Create label text matrix and add header
+label_text <- rbind(
+c("Method", "HR [95% CI]"),
+cbind(table_data$Method, table_data$HR_CI)
+)
+
+# Plot
+forestplot(
+labeltext = label_text,
+mean = c(NA, b$HR),
+lower = c(NA, b$`95% CI Lower`),
+upper = c(NA, b$`95% CI Upper`),
+zero = 1,
+boxsize = 0.2,
+graph.pos = 3,
+line.margin = 0.3,
+lwd.zero = 2,
+col = fpColors(box = "royalblue", line = "darkblue", zero = "black"),
+xlab = "Hazard Ratio (HR) with 95% CI",
+txt_gp = fpTxtGp(
+label = gpar(fontsize = 11),
+ticks = gpar(fontsize = 10),
+xlab = gpar(fontface = "bold", fontsize = 12),
+title = gpar(fontface = "bold", fontsize = 14)
+),
+title = "Hazard Ratios for White vs. Hispanic/Latino",
+xticks = seq(0.6,1.2,by=0.1)
+)
+
+```
+
+
+```{r}
+library(dplyr)
+library(forestplot)
+
+# Step 1: Prepare table data
+table_data <- data.frame(
+Method = as.character(b$Method),
+HR = sprintf("%.2f", b$HR),
+CI = sprintf("[%.2f, %.2f]", b$`95% CI Lower`, b$`95% CI Upper`)
+)
+
+# Step 3: Create label text (left side) showing Method, logHR, logSE
+label_text <- cbind(
+table_data$Method,
+table_data$HR,
+ table_data$CI
+)
+
+# Step 4: Add header row
+label_text <- rbind(c("Method", "HR", "95% CI"),
+                     label_text)
+is_summary <- c(TRUE,  rep(FALSE, nrow(table_data)))
+# Step 5: Bold only the header row
+label_styles <- fpTxtGp(
+label = list(
+gpar(fontface = c("plain", rep("plain", nrow(table_data))),fontsize = 11, fontfamily ="serif"),
+gpar(fontface = c("plain", rep("plain", nrow(table_data))),fontsize = 11, fontfamily ="serif"),
+gpar(fontface = c("plain", rep("plain", nrow(table_data))),fontsize = 11, fontfamily ="serif")
+),
+ticks = gpar(fontsize = 10, fontfamily ="serif"),
+xlab = gpar(fontsize = 11, fontfamily ="serif"),
+title = gpar(fontface = "bold", fontsize = 14)
+)
+
+# Step 6: Plot forestplot
+my_plot <- forestplot(
+labeltext = label_text,
+mean = c(NA,  table_data$HR),
+lower = c(NA, b$`95% CI Lower`),
+upper = c(NA, b$`95% CI Upper`),
+zero = 1,
+boxsize = 0.2,
+line.margin = 0.3,
+is.summary = is_summary,
+lwd.zero = 2,
+graph.pos = 4, # 4th column for plot
+col = fpColors(box = "royalblue", line = "darkblue", zero = "black"),
+txt_gp = label_styles,
+xlab = "Hazard Ratio (HR) with 95% CI",
+xticks = seq(0.4,1.1,by=0.1)
+)
+saveRDS(my_plot, "African American_Forest.rds")
+
+
+```
+
+##### Comparisons of Covariate Balance
+```{r}
+## Construct a data frame containing variable name and SMD from all methods
+dataPlot <- data.frame(variable   = tabUnmatched$Variable,
+                      Unmatched  = as.numeric(tabUnmatched$Mean_SMD),
+                      Matched_optimal  = as.numeric(tabMatched_optimal_1$Mean_SMD),
+                      Matched_caliper_0.1  = as.numeric(smd_avg_nn0.1_1$Mean_SMD),
+                       Matched_nerest_neighbor = as.numeric(tabMatched_nn$Mean_SMD),
+                       IPTW = as.numeric(smd_avg_iptw_1$Mean_SMD),
+                       IPTW_with_trimming = as.numeric(iptw_trimmed_1$Mean_SMD),
+                      ps_stratification = as.numeric(weighted_smds$weighted_smd)
+                       )
+
+## Create long-format data for ggplot2
+dataPlotMelt <- melt(data          = dataPlot,
+                     id.vars       = c("variable"),
+                     variable.name = "Method",
+                     value.name    = "SMD")
+
+library(forcats)
+
+dataPlotMelt$Method <- fct_recode(dataPlotMelt$Method,
+  "Original Data" = "Unmatched",
+  "Optimal Matching" = "Matched_optimal",
+  "NNM (caliper = 0.2)" = "Matched_caliper_0.1",
+  "NNM" = "Matched_nerest_neighbor",
+  "Stablized IPTW" = "IPTW",
+  "IPTW (5% trimming)" = "IPTW_with_trimming",
+  "PS Stratification" = "ps_stratification"
+)
+
+## Order variable names by magnitude of SMD
+varNames <- as.character(dataPlot$variable)[order(dataPlot$Unmatched,decreasing = FALSE)]
+
+## Order factor levels in the same order
+dataPlotMelt$variable <- factor(dataPlotMelt$variable,
+                                levels = varNames)
+
+dataPlotMelt$variable2 <- fct_recode(dataPlotMelt$variable,
+  "SES Quintile" = "sesindex2015_2019",
+  "Sex at Birth" = "gender",
+  "Age at 1L Treatment" = "age_group",
+  "Site of Care" = "practicetype",
+  "Year of Diagnosis" = "year_diag_group",
+  "Deletion 13q" = "Deletion.13q",
+  "Anemia" = "hemoglobin",
+  "ISS Stage" = "issstage",
+  "ASCT" = "asct",
+  "Cytogenetic Risk Group" = "risk_group",
+  "Hypercalcemia" = "marker_calcium_result",
+  "Ploidy" = "Ploidy",
+  "ECOG Performance Status" = "combined_ecog",
+  "Renal Insufficiency" = "marker_creatinie_result"
+)
+
+
+## Plot using ggplot2
+my_plot <- ggplot(data = dataPlotMelt,
+mapping = aes(x = variable2, y = SMD, group = Method, color = Method)) +
+geom_line() +
+geom_point() +
+geom_hline(yintercept = 0.1, color = "red", linewidth = 0.3) +
+coord_flip() +
+theme_bw() +
+theme(legend.key = element_blank(),
+      ) +
+scale_y_continuous(limits = c(0, 1)) +
+labs(x = "Covariates", y = "SMD")
+
+saveRDS(my_plot, file = "African American_balance.rds")
+```
+
+# Average observations loss
+```{r}
+# Add method names to each
+nnm_tbl <- match_summary_by_group_nnm %>%
+mutate(Method = "NNM") %>% mutate(treatment = as.numeric(treatment)) %>% 
+  rename(
+Original_N = Avg_Original_N,
+Retained_N = Avg_Matched_N,
+Excluded_N = Avg_Excluded_N,
+Prop_Lost = Avg_Prop_Excluded
+)
+
+nnm_caliper_tbl <- match_summary_by_group_nnmcaliper %>%
+mutate(Method = "NNM (caliper = 0.2)") %>% mutate(treatment = as.numeric(treatment)) %>% 
+  rename(
+Original_N = Avg_Original_N,
+Retained_N = Avg_Matched_N,
+Excluded_N = Avg_Excluded_N,
+Prop_Lost = Avg_Prop_Excluded
+)
+
+optimal_tbl <- match_summary_by_group_optimal %>%
+mutate(Method = "Optimal Matching") %>% mutate(treatment = as.numeric(treatment)) %>% 
+  rename(
+Original_N = Avg_Original_N,
+Retained_N = Avg_Matched_N,
+Excluded_N = Avg_Excluded_N,
+Prop_Lost = Avg_Prop_Excluded
+)
+
+
+trimming_tbl <- trim_summary_by_group %>%
+mutate(Method = "IPTW (5% Trimming)") %>% 
+  rename(
+Original_N = Avg_Original_N,
+Retained_N = Avg_Retained_N,
+Excluded_N = Avg_Trimmed_N,
+Prop_Lost = Avg_Prop_Trimmed
+) %>% mutate(treatment1 = as.numeric(treatment)) %>% mutate(treatment = ifelse(treatment == 1, 1,0))
+
+
+combined_tbl <- bind_rows(nnm_tbl, nnm_caliper_tbl, optimal_tbl, trimming_tbl) %>%
+mutate(`Race/Ethnicity` = ifelse(treatment == 0, "White", "African American")) %>%
+select(Method, `Race/Ethnicity`, Original_N, Retained_N, Excluded_N, Prop_Lost)
+
+cleaned_tbl <- combined_tbl %>%
+mutate(
+`Race/Ethnicity` = stringr::str_to_title(`Race/Ethnicity`),
+`Prop Lost` = scales::percent(Prop_Lost, accuracy = 0.1)
+) %>%
+select(
+Method,
+`Race/Ethnicity`,
+`Original N` = Original_N,
+`Retained N` = Retained_N,
+`Excluded N` = Excluded_N,
+`Prop Lost`
+) %>% mutate(across(c(`Original N`, `Retained N`, `Excluded N`), round, 0))
+
+library(kableExtra)
+
+cleaned_tbl %>%
+kable(caption = "Table: Sample Sizes and Proportion Lost by Method and Group") %>%
+kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+# Step 1: Prepare wide-style table with compact info
+compact_tbl <- combined_tbl %>%
+mutate(
+Race = ifelse(`Race/Ethnicity` == "White", "White", "African American"),
+Loss_Info = paste0(round(Retained_N,0), " (", scales::percent(1-Prop_Lost, accuracy = 0.1), ")")
+) %>%
+select(Method, Race, Loss_Info) %>%
+tidyr::pivot_wider(names_from = Race, values_from = Loss_Info) %>%
+relocate(Method, White,`African American`)
+
+
+
+original_row <- tibble(
+Method = "Original Average N",
+White = round(nnm_tbl$Original_N[nnm_tbl$treatment == 0],0),
+`African American` = round(nnm_tbl$Original_N[nnm_tbl$treatment == 1],0)
+) 
+
+original_row$White <- as.character(original_row$White)
+original_row$`African American`<- as.character(original_row$`African American`)
+
+display_tbl <- bind_rows(original_row, compact_tbl)
+
+a <- display_tbl %>%
+kable(caption = "") %>%
+kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+saveRDS(a, "African American_sample loss.rds")
+```
+
+
+# Complete data analysis comparison
+```{r}
+completed_data <- read.csv("African American_complete_data_results.csv")
+
+# Load libraries 
+library(ggplot2) 
+library(dplyr) 
+
+# Assuming you have the imputed results 
+# Combine datasets for comparison 
+combined_data <- bind_rows(completed_data %>% mutate(`Analysis Type` = "Complete Case"), c %>% mutate(`Analysis Type` = "Imputed Data") ) 
+# Define the desired order manually
+desired_order <- c("PS as Covariate",
+                   "PS Stratification (5 strata)",
+                 #  "PS Stratification (5 strata) - ATT",
+                   "Stablized IPTW",
+                   "IPTW (5% trimming)",
+                    "Optimal Matching",
+                   "NNM (caliper width = 0.2)",
+                    "NNM",
+                    "Covariate Adjustment",
+                   "Crude")
+
+# Convert Method column to factor with specified order
+combined_data$Method <- factor(combined_data$Method, levels = desired_order)
+
+# Create a forest plot 
+p <- ggplot(combined_data, aes(x = Method, y = Hazard_Ratio, color = `Analysis Type`)) + geom_point(position = position_dodge(width = 0.5), size = 3) + geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), position = position_dodge(width = 0.5), width = 0.3) + coord_flip() + labs( x = "Method", y = "HR with 95% CI") + scale_y_continuous(limits = c(0.4, 1.1)) + theme_minimal()
+
+saveRDS(p, "African American_comparison")
+```
+
+# SMD Prop
+
+```{r, warning=FALSE, echo=FALSE}
+library(cowplot)
+# Add title above by stacking label + image
+p1 <- plot_grid(
+ggdraw() + draw_label("A. NNM (caliper = 0.2)", fontface = 'bold', x = 0.5, hjust = 0.5, size = 12),
+ggdraw() + draw_image("African American_NNM02_SMD_Prop.png"),
+ncol = 1,
+rel_heights = c(0.1, 1)
+)
+
+p2 <- plot_grid(
+ggdraw() + draw_label("B. NNM", fontface = 'bold', x = 0.5, hjust = 0.5, size = 12),
+ggdraw() + draw_image("African American_NNM_SMD_Prop.png"),
+ncol = 1,
+rel_heights = c(0.1, 1)
+)
+
+p3 <- plot_grid(
+ggdraw() + draw_label("C. Optimal Matching", fontface = 'bold', x = 0.5, hjust = 0.5, size = 12),
+ggdraw() + draw_image("African American_optimal_SMD_Prop.png"),
+ncol = 1,
+rel_heights = c(0.1, 1)
+)
+
+p4 <- plot_grid(
+ggdraw() + draw_label("D. Stabilized IPTW", fontface = 'bold', x = 0.5, hjust = 0.5, size = 12),
+ggdraw() + draw_image("African American_SIPTW_SMD_Prop.png"),
+ncol = 1,
+rel_heights = c(0.1, 1)
+)
+
+p5 <- plot_grid(
+ggdraw() + draw_label("E. IPTW (5% Trimming)", fontface = 'bold', x = 0.5, hjust = 0.5, size = 12),
+ggdraw() + draw_image("African American_IPTWTRIM_SMD_Prop.png"),
+ncol = 1,
+rel_heights = c(0.1, 1)
+)
+
+p6 <- plot_grid(
+ggdraw() + draw_label("F. PS Stratification", fontface = 'bold', x = 0.5, hjust = 0.5, size = 12),
+ggdraw() + draw_image("African American_STRATA_SMD_Prop.png"),
+ncol = 1,
+rel_heights = c(0.1, 1)
+)
+
+# Arrange in a 2x3 grid
+combined <- plot_grid(p1, p2, p3, p4, p5, p6, ncol = 2)
+
+# Save combined panel
+ggsave("African American_combined_panel.png", combined, width = 10, height = 10)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
