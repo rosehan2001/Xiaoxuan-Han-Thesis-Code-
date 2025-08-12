@@ -1,0 +1,1153 @@
+---
+title: "Thesis"
+format: 
+  pdf:
+    number-sections: true
+    toc: true
+    toc-title: "Table of Contents"
+    fontsize: 11pt
+    include-in-header: 
+      text: |
+        \usepackage{pdfpages}
+    linestretch: 1.5
+editor: visual
+---
+
+```{=tex}
+\newpage
+\section*{Abstract}
+```
+**Propensity score (PS) methods are widely used to reduce confounding in observational research but have not been systematically compared in the context of assessing racial disparities in multiple myeloma outcomes using real-world data (RWD). This thesis applies and evaluates seven PS methods, including nearest neighbor matching, optimal matching, stabilized and trimmed inverse probability of treatment weighting, PS stratification, and PS as a covariate, to examine racial disparities in overall survival and time to next treatment among 12,053 MM patients in the U.S. from the Flatiron Health database. We assess each method’s performance in balancing demographic and biomarker covariates and estimating race/ethnicity effect from Cox proportional hazards models. The findings offer practical guidance on the strengths and limitations of PS methods in addressing confounding and provide methodological insight for future racial disparities research using RWD.**
+
+```{=tex}
+\newpage
+\section*{Acknowledgments}
+
+I am grateful to the Biostatistics Division at the University of Toronto Dalla Lana School of Public Health and to F. Hoffmann–La Roche for the opportunity to conduct this research as part of the Master's of Science (MSc) program. I would like to express my deepest gratitude to my supervisors, Melanie Poulin-Costello and Jenna Sykes, for their invaluable guidance, encouragement, and feedback, which shaped both the direction and quality of this thesis. I would also like to thank Yanling Jin for providing continuous and insightful input throughout the course of this work. Finally, I want to thank my parents and friends for their support and for the  many moments of joy and motivation they brought me during this journey.
+```
+```{=tex}
+\newpage
+\section*{List of Tables}
+```
+**Table 1** Descriptive statistics among MM patients by race/ethnicity.
+
+```{=tex}
+
+\section*{List of Figures}
+```
+**Figure 1** Cohort Selection flowchart of patients diagnosed with MM in January 1, 2011 and May 31, 2024 and received 1L treatment within 60 days of diagnosis.
+
+**Figure 2.1** PS distributions in the original data and after applying PS methods between White and AA patients.
+
+**Figure 2.2** PS distributions in the original data and after applying PS methods between White and Asian patients.
+
+**Figure 2.3** PS distributions in the original data and after applying PS methods between White and HL patients.
+
+**Figure 2.4** PS distributions in the original data and after applying PS methods between White and Other Races patients.
+
+**Figure 3** PS distributions by stratum after applying stratification between White and other race/ethnicity group patients.
+
+**Figure 4** Love plots showing covariate balance before and after applying PS methods.
+
+**Figure 5.1** Forest plot showing HRs and 95% CIs comparing OS between White and African American.
+
+**Figure 5.2** Forest plot showing HRs and 95% CIs comparing OS between White and Asian. IPTW with 5% trimming was not applied as all Asian patients were excluded after trimming.
+
+**Figure 5.3** Forest plot showing HRs and 95% CIs comparing OS between White and Hispanic or Latino.
+
+**Figure 5.4** Forest plot showing HRs and 95% CIs comparing OS between White and Other Races.
+
+**Figure 6.1** Forest plot showing HRs 95% CIs comparing TTNT between White and AA patients.
+
+**Figure 6.2** Forest plot showing HRs 95% CIs comparing TTNT between White and Asian patients. IPTW with 5% trimming was not applied as all Asian patients were excluded after trimming.
+
+**Figure 6.3** Forest plot showing HRs 95% CIs comparing TTNT between White and HL patients.
+
+**Figure 6.4** Forest plot showing HRs 95% CIs comparing TTNT between White and Other Races patients.
+
+{{< pagebreak >}}
+
+```{=tex}
+
+\section*{Chapter 1}
+```
+# Introduction
+
+```{r, include=FALSE}
+tbl <- readRDS("stats_2.rds") 
+library(gt)
+gtsave(tbl,"table_new.png")
+
+```
+
+## Racial Disparities in MM
+
+Multiple myeloma (MM), a rare cancer representing 1.8% of all new cancer cases in the US, is characterized by abnormal clonal plasma cells in the bone marrow, which can lead to complications such as hypercalcemia, renal dysfunction, anemia, and bone lesions (Benjamin et al., 2003; National Cancer Institute, 2025). Racial differences in MM incidence rates in the US have been observed, with the Black population (13.9 per 100,000 persons) experiencing an incidence more than twice as high as that of the White population (6.5 per 100,000 persons). The MM incidence rates also vary among other racial groups, including non-Hispanic Asians (4.2 per 100,000 persons), non-Hispanic American Indian/Alaska Natives (5.5 per 100,000 persons), and Hispanics (6.6 per 100,000 persons) (National Cancer Institute, 2025; Radhakrishnan et al., 2015).
+
+Racial disparities in MM health outcomes in the US have been reported. Ailawadhi et al. (2012) found that White patients experienced a higher cumulative gain in survival rates over subsequent years compared to Asian patients, using data from the National Cancer Institute Surveillance Epidemiology and End Results (SEER). Earlier studies by Benjamin et al. (2003) and Derman et al. (2022) both found that the Black patients had significant inferior survival outcomes compared to the White patients. In contrast, Mikhael et al. (2024) suggested that when adjusted for socioeconomic status in multivariable models, the Black patients exhibited superior survival outcomes. 
+
+## Existing Research
+
+While many studies have contributed to understanding racial disparities in MM, there was a lack of comprehensive analysis of examining whether racial disparities exist in MM health outcomes across multiple race/ethnicity groups. Traditional multivariate regression models commonly used in previous research may inadequately adjust for confounding and thus fail to capture true racial disparities, limiting the accuracy of estimates derived from real-world populations in observational studies (Derman et al., 2020; Maignan et al., 2022; Radhakrishnan et al., 2015). Thus, propensity score (PS) methods have been used as valuable tools for reducing confounding in racial disparities research. For example, Silber et al. (2013) used PS matching to investigate racial disparities in breast cancer outcomes, and Dong et al. (2022) applied similar approaches to identify racial disparities in MM health outcomes. However, despite these applications, the current literature offers limited investigation into the use of multiple PS methods or comparisons of their performances, particularly in the context of racial disparities.
+
+Furthermore, prior work has largely focused on comparisons between African American and White patients, with limited analysis of Asian, Hispanic or Latino, and other race/ethnicity groups (Derman et al., 2020; Hamilton et al., 2009; Maini et al., 2022; Radhakrishnan et al., 2015). Many previous studies rely on administrative data, cancer registries, or data from single institutions or clinical trials. Electronic health record (EHR)-derived real-world data (RWD), which allows for longitudinal tracking of clinical variables, treatment exposures, and outcomes, have not been widely used (Ailawadhi et al., 2012; Derman et al., 2020; Fiala et al., 2017; Waxman et al., 2010).
+
+## Study Objectives
+
+The objective of this thesis is to assess racial disparities in overall survival (OS) and time to next treatment (TTNT) among MM patients in the US, using RWD from the Flatiron Health database. To address confounding, the study applies a range of PS methods, including nearest neighbor matching (NNM) with and without a caliper distance, optimal matching, stabilized and trimmed inverse probability of treatment weighting (IPTW), PS stratification, and using PS as an additional covariate. By comparing these methods, this thesis aims to evaluate how effectively each method balances baseline covariates and estimates disparities in OS and TTNT across race/ethnicity groups, including non-Hispanic White (White), non-Hispanic African American (AA), non-Hispanic Asian (Asian), Hispanic or Latino (HL), and Other Races.
+
+In this thesis, chapter 1 introduces the research background and study objectives; chapter 2 describes the data source, study population, and the implementation and comparison of seven PS methods in estimating race/ethnicity effect; chapter 3 presents the main results, including covariate balance after applications of multiple PS methods and estimates of racial disparities in OS and TTNT; and chapter 4 discusses the findings, methodological strengths and limitations, and implications for future research. This thesis work aims to offer a deeper understanding of racial disparities in MM health outcomes in real-world settings while also providing practical guidance on the selection of PS methods to account for confounding in observational data.
+
+```{=tex}
+\newpage
+\section*{Chapter 2}
+```
+# Methods
+
+## Data Sources
+
+The study cohort was extracted from the US nationwide Flatiron Health RWD database. Flatiron Health RWD is a longitudinal database, comprising de-identified patient-level structured and unstructured data that capture EHR of cancer patients. This database contained over 3.5 million patient records among 22 indications across 800 sites (Flatiron Health, 2025). This study included patients diagnosed with MM from January 1, 2011 to May 31, 2024, who received first-line (1L) treatment within 60 days of selection, following a rule suggested by Flatiron's recommended approach to ensure data quality and avoid 1L treatment misclassification. Notably, in Flatiron database, a line of therapy is generally defined as the first drug episode plus other eligible drugs given within 28 days, and the start of 1L is considered the date of the first drug episode of an eligible therapy, given within 14 days before or after the patient's MM date of diagnosis. Patients with missing lines of therapies were excluded (Supplementary Data Information).
+
+## Variables of Interest
+
+### Race/Ethnicity
+
+The primary explanatory variable of interest was race/ethnicity. Race and ethnicity were self-reported and categorized as non-Hispanic White (White), non-Hispanic African American (AA), non-Hispanic Asian (Asian), Hispanic or Latino (HL), non-Hispanic Other Races, and Unknown/Missing in this study. Flatiron Health processes race and ethnicity data through a mapping and de-identification process to ensure consistency with the U.S. Office of Management and Budget (OMB) Standards for Race and Ethnicity. Specifically, patients with ethnicity recorded as "Hispanic or Latino" were categorized as "Hispanic or Latino" for both race and ethnicity, regardless of the patient's race. When ethnicity was recorded as "Not Hispanic or Latino" and race information was available, patients were categorized as White, AA, and Asian. The "Other Races" category included American Indian or Alaska Native, Native Hawaiian or Other Pacific Islander, and multiple race categories. However, due to variations in documentation practices across different healthcare providers and historical differences in EHR systems, data capture was inconsistent, and missing data was common. The "Unknown/Missing" category included cases where race and ethnicity were either unknown or not coded.
+
+### Endpoints
+
+The endpoints of interest were overall survival (OS) and time to next treatment (TTNT), both widely used in RWD studies for oncology research (Blumenthal et al., 2019; Chen et al., 2017; Li et al., 2022; Walker et al., 2021). OS was defined as the time from MM diagnosis date to the death date, with death indicating all-cause mortality. If a patient did not die, they were censored at the last known alive date, defined as the last date the patient underwent laboratory or vital tests, or received a final line of therapy. To address the competing risk of death and mitigate immortal time bias, TTNT was defined as a composite endpoint reflecting patients' disease progression: the time from the start date of 1L treatment to either the start date of 2L treatment or death date, whichever occurred first. If a patient neither started 2L treatment nor died, they were censored at the last known alive date.
+
+### Covariates
+
+Covariates were selected based on their clinical relevance to MM prognosis and their availability in the Flatiron database. Specifically, variables were included if they were known prognostic factors for MM OS and TTNT, or potential confounders. Baseline demographic characteristics included age at 1L treatment (categorized as \<65 vs. ≥65 years), sex at birth (male or female), year of diagnosis (categorized as 2011–2014, 2015–2019, and 2020–2024), and socioeconomic status (SES) quintile. Age and sex were routinely adjusted for in MM disparities studies, as they influence treatment eligibility and survival (Ailawadhi et al., 2017; Attal et al., 2007; Palumbo et al., 2011). SES quintile was represented as an area-level measure based on the neighborhood characteristics of the patient’s residence in the Flatiron database. It was grouped in US population-weighted quintiles such that a value of 1 represents the areas with the lowest SES and 5 represents the areas with the highest SES (Boscoe et al., 2021). Prior research has shown that SES may confound racial disparities in outcomes, and racial variation in SES distribution has been observed (Williams et al., 2016).
+
+Some other patients' characteristics included Eastern Cooperative Oncology Group (ECOG) performance status, International Staging System (ISS) stage, autologous stem cell transplant (ASCT) status, and site of care. ECOG performance status was categorized as 0–1 (fully active or restricted in physically strenuous activity but ambulatory) and ECOG ≥2 (ambulatory and capable of self-care but unable to perform work-related tasks; capable of only limited selfcare; completely disabled) to reflect functional capacity and treatment eligibility (Repetto et al., 2002). ISS stage was categorized as stage I, II, or III, based on serum beta-2 microglobulin and albumin levels. Specifically, stage I was defined as beta-2 microglobulin \< 3.5 mg/L and albumin ≥ 3.5 g/dL, stage III as beta-2 microglobulin ≥ 5.5 mg/L, and stage II included patients who did not meet criteria for either stage I or III. ASCT was included as a binary indicator of patients' receipt of ASCT during the study, with demonstrated survival benefit in eligible MM patients (Ailawadhi et al., 2017; Attal et al., 2007). Site of care was classified as "community", "academic", and "both community and academic" based on the patient's practice setting, as care setting may affect access to staging and diagnostics (Mikhael et al., 2024).
+
+Biomarker covariates were based on the latest available laboratory and genetic test results prior to 1L and considered baseline measures. Anemia status (hemoglobin \<10 g/dL), renal insufficiency status (serum creatinine \>2 mg/dL), and hypercalcemia status (serum calcium \>11 mg/dL) were included, which were binary indicators of classic clinical manifestations of MM. Prior studies have documented higher prevalence of these features among Black patients, often at younger ages and with more advanced disease (Bertrand et al., 2024). Ploidy status (hyperdiploid vs. hypodiploid), deletion 13q presence (positive/negative), and cytogenetic risk group were also measured and included in the study. Cytogenetic risk groups were categorized as standard (trisomies, t(11;14), t(6;14)), intermediate (t(4;14), deletion 13), or high (deletion 17p, t(14;16)) as identified through fluorescence in situ hybridization (FISH) or conventional karyotyping. These features were selected based on their inclusion in the Revised International Staging System and international treatment guidelines (Derman et al., 2020; Fonseca et al., 2009; Greipp et al., 2005; Kumar & Rajkumar, 2018).
+
+Missing values for all covariates were categorized as "Unown/Missing". Baseline covariates were summarized using descriptive statistics, stratified by race/ethnicity. All variables were categorical, so they were compared using Chi-squared tests. No adjustments were made for multiple comparisons, as these analyses were descriptive and exploratory. Statistical significance was determined at a 2-sided type I error rate of 0.05.
+
+## Missing Data
+
+### Overview of Missing Data in RWD
+
+In RWD, missingness is a common issue that can cause bias in estimates and reduce statistical power in study results if not appropriately handled. There are three types of missing mechanisms, including missingness completely at random (MCAR), missingness at random (MAR), and missingness not at random (MNAR). Speifically, MCAR indicates that the probability of a variable being missing for a given subject is independent from both observed and unobserved data for that subject. MAR indicates that the probability of a variable being missing for a given subject is independent from the unobserved data for that subject after accounting for all the observed variables, i.e. it is only dependent on observed variable. MNAR indicates that the probability of a variable being missing depends on the missing values themselves (Little & Rubin, 2020).
+
+In healthcare RWD, missing data may not always stem from random errors or data loss but can instead reflect the course of patient care. For example, a missing lab test result does not necessarily indicate an error in data collection; rather, it may be due to a physician’s decision not to order the test if it was deemed unnecessary for a specific patient. Similarly, demographic or socioeconomic information may be missing because patients choose not to disclose it due to privacy concerns. In these cases, missingness is systematically related to patient characteristics, making it more likely to be MAR or MNAR rather than MCAR.
+
+To deal with missing data, complete case (CC) analysis, which excludes observations with missing values, is a common approach (Austin et al., 2021; Carroll et al., 2020). However, it can lead to biased estimates unless the data are MCAR or the statistical model appropriately accounts for missingness when the data are MAR (Graham, 2012; Molenberghs & Kenward, 2008). Ignoring potential structured patterns of missingness can introduce bias in statistical analyses, particularly if missing data are more frequent in specific subgroups. For instance, if patients with advanced MM are less likely to undergo certain tests, analyzing only those with complete data could lead to an underestimation of disease severity in the population. A widely used alternative is incorporating multiple imputation (MI), a simulation-based approach that replaces missing values with multiple plausible values drawn from predictive distributions based on the observed data. MI is a Monte Carlo method that generates imputed datasets and replace the missing values by more than one simulated versions. It is a widely accepted method for handling missing data, particularly when the data are MAR or MCAR, as it accounts for statistical uncertainty in the imputations and helps reduce bias (Azur et al., 2011).
+
+### Missing Data in Covariates
+
+For covariates with missing values, missingness was treated as a separate indicator category rather than being imputed. This approach is common in epidemiological studies where missingness in certain covariates may be informative (White & Carlin, 2010). It also helps assess if missingness itself was associated with the endpoints, while avoiding potential biases that could be introduced by imputation.
+
+### Missing Data in Race/Ethnicity
+
+The absence of race/ethnicity data may be due to various factors. For example, patients may choose to not disclose their race/ethnicity due to privacy concerns or uncertainty about classification. It is also possible that disparities in healthcare access and inconsistencies in EHR data collection practice contributed to missingness. Thus, the race/ethnicity missingness pattern was assumed to be MAR, and MI was applied to address the high proportion of its missing data (22%) in the study cohort, where the assignment of imputed values to each race/ethnicity group will be demonstrated in the results section.
+
+To conduct MI for race/ethnicity, Multiple Imputation by Chained Equations (MICE) was applied. MICE is a flexible and widely used approach for handling missing values by iteratively imputing each variable with missing data using a series of univariate models, conditional on the other variables in the dataset. The theoretical foundation of this approach is based on Rubin’s multiple imputation framework, which generates multiple plausible datasets to account for the uncertainty inherent in the missing values (Rubin, 1987). Estimates from each imputed dataset were pooled using Rubin’s rules to obtain valid statistical inferences. In this study, the steps for imputing race/ethnicity using the MICE algorithm are as follows:
+
+1.  Missing values in race/ethnicity (i.e., patients recorded as "Unknown/Missing" category for race/ethnicity) were initially filled with random draws from patients with observed race/ethnicity, i.e., all patients in the "Unknown/Missing" race/ethnicity group.
+
+2.  Iterative imputation process:
+
+    a\. Race/ethnicity was regressed on the covariates and endpoints mentioned in Section 2.3 with complete data using the "polyreg" method, a polytomous logistic regression approach that accounted for the unordered categorical nature of race/ethnicity with more than two categories. All covariates and endpoints were included from the primary analysis to keep their relationships in the data.
+
+    b\. The estimated regression coefficients and their variance-covariance matrix were extracted from the regression model in (a).
+
+    c\. Using the quantities obtained in (b), the estimated regression coefficients were randomly perturbed to reflect the degree of uncertainty arising from the data.
+
+    d\. Using the set of perturbed regression coefficients obtained in (c), the conditional distribution of race/ethnicity was determined for each patient with missing race/ethnicity.
+
+    e\. A value of race/ethnicity was drawn from the condition distribution for each patient with missing race/ethnicity.
+
+    f\. The steps above were repeated for 10 cycles to ensure convergence was achieved. The common practice is to run about 5-20 cycles, with 10 cycles often selected as default, where the imputations can stabilize and are no longer sensitive to starting values or order of imputation (Austin et al., 2021).
+
+3.  Steps 1 and 2 were repeated for 22 times, with each imputed dataset containing slightly different plausible values of race/ethnicity to reflect uncertainty. A total of 22 imputed datasets were generated as White et al. (2011) suggested using approximately one imputation per percentage of missing data to ensure stability in effect and variance estimation.
+
+4.  Each imputed dataset was analyzed separately, and results were pooled using Rubin’s rules to combine estimates and variances.
+
+The MICE algorithm was implemented using the *mice* package in R (van Buuren & Groothuis-Oudshoorn, 2006).
+
+## Propensity Score Methods
+
+### Propensity Scores (PS)
+
+Observational studies assessing racial disparities in clinical health outcomes are often impacted by confounding, where the effect estimate of race/ethnicity can be systematically biased by certain patients’ baseline characteristics, such as clinical and demographic factors (Imbens, 2004). PS methods are well known for reducing the confounding effect on the treatments, interventions, or exposure estimates, and reducing bias in effect estimates in non-randomized comparisons (Rosenbaum and Rubin, 1983). PS are called balancing scores, meaning that the distribution of measured covariates are expected to be similar conditional on the same or similar PS. In this study, PS were the probability of belonging to a certain race/ethnicity group (e.g., Asian) versus the reference group (e.g. White), conditional on the observed baseline covariates. By balancing covariates between groups, we can perform a more valid statistical comparison of patients’ OS and TTNT between two race/ethnicity groups (Imbens & Rubin, 2015).
+
+PS was expressed as $e(X_i) = Pr(Z_i=1 | X_i=x)$, where $Z_i$ represented the race/ethnicity group ($Z_i$ = 0 if White, $Z_i$ = 1 if Asian/HL/AA/Other Races), and $i = 1, ..., 12,053$ for $12,053$ patients in the study cohort. $X_i$ was a vector of 14 observed baseline covariates. PS were estimated using logistic regression model: $$ e(X_i) = logit^{-1}(\alpha+X_i\beta) $$
+
+where $\alpha$ is the intercept, and $\beta$ is a vector of estimated coefficients for covariates $X_i$.
+
+In this study, since White patients had the largest sample size, they were used as the reference group for PS estimation. Separate logistic regression models were developed to estimate the PS for each pairwise comparison (White vs. Asian, White vs. HL, White vs. AA, White vs. Other Races).
+
+### Variable Selection
+
+### Estimands and Assumptions
+
+In causal inference, the potential outcomes framework is a fundamental approach to estimate treatment effects, such as the average treatment effect (ATE) and average treatment effect in the treated (ATT), the two most common estimands. ATE is defined as the difference in outcomes if everyone in the population were treated versus not treated, whereas ATT is defined as the difference in outcomes between those who actually received the treatment compared to if they had not.
+
+PS methods are known to be applied in causal inference studies to estimate ATE and ATT by adjusting for confounders and mimicking a randomized trial setting (Imbens & Rubin, 2015). However, in the context of race/ethnicity, applying ATE and ATT becomes complex because race/ethnicity is not a manipulable treatment but an inherent, fixed patient characteristic. Unlike medical treatments or interventions, individuals cannot be randomly assigned to different race/ethnicity groups, making standard causal inference interpretations inappropriate (Hernán & Robins, 2020).
+
+In this study, seven different PS methods were applied not to infer causality but to minimize confounding effects when assessing associations between race/ethnicity and MM health outcomes. The goal of these methods was to adjust for observed baseline differences across race/ethnicity groups, allowing for a more valid statistical comparison rather than a causal effect estimation. Thus, standard causal inference assumptions are not applicable in this study when applying PS methods, such as consistency, exchangeability, positivity, and the Stable Unit Treatment Value Assumption (SUTVA) (Holland, 1986; Rubin, 1974).,
+
+### Propensity Score Matching (PSM)
+
+PSM methods created matched sets by pairing White patient group with each non-White patient group based on similar PS values, meaning they had similar observed baseline covariates. The race/ethnicity effect can be directly estimated by comparing health outcomes between White and non-White patients within the matched sets. To define a specific PSM method, several factors were considered, including greedy or optimal matching, matching ratio, whether matching was done with or without replacement, and caliper distance. Three different matching methods and how they were applied are discussed below.
+
+#### Nearest Neighbor Matching (NNM)
+
+In this study, NNM was applied by running through the list of non-White patients and selecting the White patient who had the closest PS to match. The absolute value of the PS difference between the non-White patient and the White patient was calculated, known as the absolute difference in PS, and the White patient with the smallest difference was selected. This process is called greedy matching without replacement, as once a White patient was randomly selected to be matched with a given non-White patient based on the closest PS, that White patient was no longer available for matching with subsequent non-White patients (Stuart, 2010). If multiple White patients had PS values equally close to that of the non-White patient, one of these White patients was selected at random. A matching ratio of 1:1 indicated that only one White patient was matched to each non-White patient. The sequential matching process started with selecting the non-White patient with the highest PS, proceeding in descending order. As a result, after repeating this process for all non-White patients, each non-White patient was matched once generating unique matches. All non-White patients were included, and all unmatched White patients were excluded from the analysis.
+
+#### Nearest Neighbor Matching (NNM) with Caliper Distance
+
+A caliper distance (width) was further specified in NNM to ensure that the absolute difference in the PS between matched patients was below or equal to the specified caliper distance. Adding a caliper distance restricts matches to those within a specified PS distance, helping ensure better covariate balance by avoiding poor matches. In this study, a caliper distance of 0.2 times the standard deviation of the logit-transformed PS was used, as recommended by Austin (2011). The only difference between adding a caliper distance and the NNM method mentioned above was that, for a given non-White patient, all White patients whose PS was within the caliper range were first identified. Among this identified group, the White patient whose PS was closest to that of the non-White patient was selected for matching. If no White patients had a PS within the specified caliper distance, the non-White patient remained unmatched and was excluded from the analysis. After conducting this matching process for all non-White patients, all unmatched White patients were also excluded from the analysis.
+
+#### Optimal Matching
+
+Optimal matching was applied with a 1:1 ratio to pair non-White patients with White patients. Unlike greedy NNM, which selects matches sequentially, optimal matching identifies matches that collectively minimize the total absolute difference in PS across the entire sample, and no matching order needs to be specified (Gu & Rosenbaum, 1993; Hansen & Klopfer, 2006). In this study, only one White patient was matched to each non-White patient, and the sum of the absolute PS differences between White and non-White patients across all matched pairs was minimized. As with other matching methods, all non-White patients were included, and all unmatched White patients were excluded from the analysis.
+
+### Propensity Score Stratification
+
+To implement PS stratification, the sample was divided into five equal strata (quintiles) based on the estimated PS distribution, reducing confounding by achieving improved balance within each stratum, as patients with similar PS values are expected to have similar covariate distributions (Cochran, 1968). Within each stratum, both non-White and White patients had PS values that fell within the corresponding quintile. Five strata were used as they achieved sufficient stratification to reduce bias while maintaining sufficient sample size, particularly for smaller race/ethnicity subgroups (e.g., Asian) (Cochran, 1968; Huppler Hullsiek & Louis, 2002).
+
+### Inverse Probability of Treatment Weighting (IPTW)
+
+To implement IPTW, a pseudo-population was created, where the distribution of measured covariates ($X_i$) was uncorrelated with race/ethnicity. It reweighted the sample of White and non-White patients by assigning each patient a weight equal to the inverse probability of being in the certain race/ethnicity group. For White patients, the weight was calculated as $w_i = \frac{1}{(1-e(X_i))}$, and for non-White patients, the weight was calculated as $w_i = \frac{1}{e(X_i))}$. Thus, for a given patient $i$, $w_i = \frac{Z_i}{e(X_i)} + \frac{(1-Z_i)}{(1-e(X_i))}$ (Rosenbaum, 1987).
+
+However, this method can lead to extreme and unstable weights if non-White patients had a very small PS close to 0, or if White patients have a very high PS close to 1, causing increased variability of the race/ethnicity effect estimates. To address this, stabilized weights and trimming were used to reduce the influence of extreme weights. Stabilized IPTW was applied by multiplying the IPTW weights by the marginal probability of belonging to a given race/ethnicity group $Pr(Z_i)$, which was expressed as $w_{i(stabilized)} = \frac{Z_iP(Z_i = 1)}{e(X_i)} + \frac{(1-Z_i)P(Z_i =0)}{(1-e(X_i))}$ (Hernán & Robins, 2020). Trimming was applied by removing the most extreme 5% of observations at both ends of the weight distribution (i.e., the 5th and 95th percentiles) (Lee, Lessler & Stuart, 2011).
+
+### Using PS as a Covariate
+
+The estimated PS was included as a continuous covariate in the outcome model to adjust for residual confounding. This approach is sometimes referred to as covariate adjustment using the PS or a doubly robust method, as it can help correct for confounding even if the PS model or the ouctome model is misspecified, though not both (Austin & Mamdani, 2006; Rosenbaum, 1987; Rosenbaum & Rubin, 1983). In this study, PS was added directly to the Cox proprotional hazards (PH) model when estimating the effect of race/ethnicity on the outcomes.
+
+## Race/ethnicity Effect and Variance Estimation
+
+PS methods were applied in each of the 22 imputed datasets independently, and the final race/ethnicity effect estimates and variances were pooled across all the imputed datasets using Rubin’s Rules (Rubin, 1987; White et al., 2010). Specifically, we estimated the race/ethnicity effect using Cox PH models regressing on OS and TTNT, respectively, with race/ethnicity as the exposure variable. In the PSM analysis, the Cox PH model was applied to the matched samples (Austin, 2011; Rosenbaum & Rubin, 1983). In the stratification analysis, the Cox PH model was applied in each stratum, where estimates were pooled across strata (Austin, 2011). In the IPTW analysis, the Cox PH model was applied to the entire weighted sample (Austin & Stuart, 2015; Hernán & Robins, 2020). In the analysis of including PS as an additional covariate, both race/ethnicity and PS were included to regress on OS and TTNT, respectively, in the Cox PH models (Lunceford & Davidian, 2004).
+
+The general Cox PH model to estimate the race/ethnicity effect on OS and TTNT for *PSM, stratification, and IPTW analyses* was:
+
+$$
+h(t|X) = h_0(t)exp(\beta_1 Z_i) \tag{1}
+$$
+
+where:
+
+-   $i = 1, ..., k$ for $k$ patients, where $k = 12,053$ in this study.
+
+-   $h(t|X)$: hazard function at time *t* for individual$i$.
+
+-   $h_0(t)$: baseline hazard function.
+
+-   $\beta_1$: log hazard ratio (log HR) for the effect of race/ethnicity.
+
+-   $Z_i$: indicator variable for race/ethnicity:
+
+    -   $Z_i$ = 0 if the patient's race/ethnicity was White;
+
+    -   $Z_i$ = 1 if the patient's race/ethnicity was non-White (Asian/HL/AA/Other Races).
+
+The Cox PH model for the analysis using *PS as an additional covariate* was:
+
+$$h(t|X) = h_0(t)exp(\beta_1 Z_i + {\beta_2}{e(X_i)}) \tag{2} $$
+
+-   $X_i$: set of covariates of the $i$th patient.
+-   $e(X_i)$: PS of the $i$th patient.
+-   $\beta_2$: log HR for $e(X_i)$.
+
+The partial likelihood functions were different for matching methods and weighting methods. *For PSM matching, stratification,* the partial likelihood function was (Rosenbaum & Rubin, 1983):
+
+$$
+L_1(\beta_1) = \prod_{i=1}^{n} \left( \frac{\exp(Z_i \beta_1)}{\sum_{j \in R(t_i)} \exp(Z_j\beta_1)} \right)^{\delta_i} \tag{3}
+$$
+
+For *including PS as an additional covariate,* the partial likelihood function changed to:
+
+$$L_{1}(\beta_1) = \prod_{i=1}^{n} \left( \frac{\exp(Z_i \beta_1 + \beta_2e(X_i))}{\sum_{j \in R(t_i)} \exp(Z_j\beta_1 + \beta_2e(X_j))} \right)^{\delta_i}
+$$
+
+For *IPTW with trimming and stabilized IPTW*. the weighted partial likelihood function was (Austin & Stuart, 2015):
+
+$$
+L_2(\beta_1) = \prod_{i=1}^{n} \left( \frac{w_i \exp(Z_i \beta_1)}{\sum_{j \in R(t_i)} w_j \exp(Z_j \beta_1)} \right)^{\delta_i} \tag{5}
+$$
+
+where:
+
+-   $n$: number of patients in the sample after the PS methods were applied.
+
+-   $R(t_i)$: risk set, i.e. patients still at risk at time $t_i$.
+
+-   $\delta_i$: event indicator:
+
+    -   For OS: $\delta_i =1$ if the patient died, $\delta_i =0$ if censored.
+
+    -   For TTNT: $\delta_i =1$ if the patient received the next treatment or died, $\delta_i =0$ if censored.
+
+-   $w_i$: weight calculated for the patient $i$:
+
+    -   For IPTW with trimming, $w_i = \frac{Z_i}{e(X_i)} + \frac{(1-Z_i)}{(1-e(X_i))}$.
+
+    -   For stabilized IPTW, $w_i = w_{i(stabilized)} = \frac{Z_iP(Z_i=1)}{e(X_i)} + \frac{(1-Z_i)P(Z_i=0)}{1-e(X_i)}$.
+
+In the following derivations of race/ethnicity effect, key statistical terms are bolded to highlight important concepts and improve readability.
+
+Using Rubin's Rules, the **pooled log HR** **(**$\bar{Q}$**)** across $M$ imputed datasets was:
+
+$$
+\bar{Q} = \frac{1}{M}\sum_{m=1}^{M}Q_m \tag{6}
+$$
+
+where:
+
+-   $M$=22: the total number of imputed datasets.
+
+-   $Q_m$: log HR for race/ethnicity from the $m^{th}$-imputation.
+
+To calculate the **pooled variance**, we first calculated the **within-imputation variance (**$\bar{U}$**):**
+
+$$
+\bar{U} = \frac{1}{M}\sum_{m=1}^{M}U_m \tag{7}
+$$
+
+where:
+
+-   $U_m$: robust variance estimator from the $m$ imputation to adjust for the matching and weighting (Austin, 2016; Austin & Cafri, 2020; Lin & Wei, 1989).
+
+    $$ U_m = \hat{Var(\hat{\beta})} = I^{-1}(\sum_{i=1}^{n}U_iU_i^\prime)I^{-1} \tag{8} $$
+
+    -   $U_i$: score residual for observation $i$, defined as the gradient (first derivative) of the individual contribution to the partial log-likelihood function with respect to the regression coefficients. For observation $i$, it quantifies the sensitivity of the likelihood to small changes in the parameter estimates
+
+        $$ {U}_i = \frac{\partial \log L_i({\beta_1})}{\partial {\beta_1}} \tag{9}$$
+
+    -   $I$: observed information matrix, defined as the negative of the second derivative (Hessian) of the partial log-likelihood function with respect to $beta_1$, evaluated at the estimated parameters. It represented the curvature of the likelihood surface and captures the precision of the parameter estimates:
+
+$${I} = -\frac{\partial^2 \log L({\beta_1})}{\partial{\beta_1} \, \partial {\beta_1}^\top} \tag{10}$$
+
+The **between-imputation variance** **(**$B$**)** was**:**
+
+$$
+B = \frac{1}{M-1}\sum_{m=1}^{M}(Q_m-\bar{Q})^2 \tag{11}
+$$
+
+The **pooled variance (**$T$**)** and the standard error $SE(\bar{Q})$ was:
+
+$$
+T = \bar{U}+(1+\frac{1}{M})B \tag{12}
+$$
+
+$$SE(\bar{Q}) = \sqrt{T} \tag{13} $$The **degrees of freedom** was:
+
+$$
+df = (M-1)(1+\frac{\bar{U}}{(1+\frac{1}{M})B})^2 \tag{14}
+$$
+
+As the sample size was large, we assumed that the $t$-distribution approximated the normal distribution, and thus the **95%** **confidence interval (CI)** was:
+
+$$
+\bar{Q} \pm 1.96 \times SE(\bar{Q}) \tag{15}
+$$ (Rubin, 1987; White et al. 2011).
+
+For *PS stratification,* estimates were pooled across strata first before applying Rubin's Rules (Lunceford & Davidian, 2004). The **pooled log HR across strata** **(**$\hat{\beta_S}$**)** was calculated by taking a weighted average of the stratum-specific estimates:
+
+$$
+Q_m = \hat{\beta}_S = \frac{1}{K}\sum_{k=1}^{K}\hat{\beta}_k \tag{16}
+$$, where:
+
+-   $K$ = 5: number of strata.
+
+-   $\hat{\beta_k}$: stratum-specific log HR.
+
+The **pooled variances across strata (**$\hat{Var(\hat{\beta_S})}$ **)** were calculated by taking a squared weight average of the stratum-specific variances:
+
+$$ U_m = \hat{Var(\hat{\beta_S})} = \frac{1}{K^2}\sum_{k=1}^{K}Var(\hat{\beta}_k)^2 \tag{17} $$
+
+where:
+
+-   $Var(\beta_k)^2$: stratum-specific robust variance estimator:\
+    $$
+    \hat{Var(\hat{\beta_k})} = I^{-1}(\sum_{i=1}^{n}U_iU_i^\prime)I^{-1} \tag{18}
+    $$
+
+Finally, the general **pooled HR** and **95% CI** estimating race/ethnicity effect for all PS methods were:
+
+$$
+HR_{pooled} = exp(\bar{Q}) \tag{19}
+$$
+
+$$
+(exp(\bar{Q}-1.96 \times SE(\bar{Q})), exp(\bar{Q}+1.96 \times SE(\bar{Q}))) \tag{20}
+$$
+
+Cox PH model assumptions were assessed to ensure validity of the survival analyses. The PH assumption was assessed using Schoenfeld residuals and was satisfied for most covariates (Grambsch & Therneau, 1994). Generalized Variance Inflation Factors (GVIFs) were also calculated to confirm acceptable levels of multicollinearity among covariates.
+
+## Covariate Balance Diagnostics
+
+Covariate balance means that the two groups being compared have similar covariate distributions. In this study, the goal of applying PS methods was to achieve covariate balance between race/ethnicity groups, thereby mitigating confounding and reducing bias in effect estimates for race/ethnicity. Covariate balance can be assessed and reported using standardized mean difference (SMD), which provides a robust, scale-independent measure of balance and are preferred over hypothesis tests (e.g., t-tests or Chi-squared tests) because they are not impacted by changes in sample size (Austin, 2011; Gu & Rosenbaum, 1993).
+
+All covariates included in this study were categorical, including both binary and multi-category variables. Therefore, for a binary categorical baseline covariate, the SMD was calculated as $d$:
+
+$$
+d = \frac{\hat{P}_0 - \hat{P}_1}{\sqrt{\frac{\hat{P}_0 (1 - \hat{P}_0) + \hat{P}_1 (1 - \hat{P}_1)}{2}}} \tag{21}
+$$
+
+where $\hat{P_0}$ and $\hat{P_1}$ denoted the proportion of a binary baseline covariate in the White and non-White patient group, respectively (White vs. Asian, White vs. HL, White vs. AA, White vs. Other Races).
+
+More generally, for a categorical baseline covariate with $K \geq 2$ levels, a multivariate Mahalanobis distance method was used to calculate the SMD (Yang & Dalton, 2012):
+
+$$d = \sqrt{(T - C)^T S^{-1} (T - C)} \tag{22}
+$$, where $T = (\hat{P}_{02}, \hat{P}_{03}, \dots, \hat{P}_{0K})$, $C = (\hat{P}_{12}, \hat{P}_{13}, \dots, \hat{P}_{1K})$, $\hat{P_{JK}}$= Pr(cateogory $k$ \| race/ethnicity group $j$), $j \in$ {0,1}, $k \in$ {2, 3, ... $K$}, and $S$ was a $(k-1) \times (k-1)$ covariance matrix defined as:
+
+$$ \begin{aligned}
+S_{kl} = \frac{[\hat{P}_{0k}(1 - \hat{P}_{0k}) + \hat{P}_{1k}(1 - \hat{P}_{1k})]}{2}, & k = l; \\ S_{kl} =  \frac{[\hat{P}_{0k} \hat{P}_{0l} + \hat{P}_{1k} \hat{P}_{1l}]}{2}, & k \neq l  \end{aligned} \tag{23}$$
+
+SMD \< 0.1 was used as the threshold to indicate sufficient covariate balance, a commonly accepted criterion suggesting that any remaining imbalance is expected to introduce only minimal bias in effect estimates (Austin & Stuart, 2015). SMDs were computed both before and after the application of each PS method. The process was conducted within each of the 22 imputed datasets as follows:
+
+1.  In each imputed dataset, SMDs were calculated for all covariates before applying PS methods to establish the baseline measure of covariate imbalance.
+2.  In each imputed dataset, SMDs were calculated for all covariates after applying PS methods.
+    -   For PSM methods, SMDs were calculated within the matched sample of White and non-White patients (AA, Asian, HL or Other Races).
+    -   For IPTW methods, SMDs were calculated within the entire weighted sample of White and non-White patients.
+    -   For PS Stratification, SMDs were calculated within each stratum, and a weighted average SMD was calculated across strata to indicate the overall balance.
+    -   For using PS as a covariate, SMDs remained unchanged from the original data, as the PS was included as a covariate in Cox PH models without directly changing the data composition.
+3.  To summarize the results from all imputed datasets, the average SMD across the 22 imputed datasets was calculated to provide an overall measure of balance. For each covariate, the proportion of times where the SMD $\geq$ 0.1 was calculated across the 22 imputed datasets, identifying covariates that frequently remained imbalanced.
+
+To visualize the results, a figure showing the SMDs for each covariate, calculated from the imputed datasest before and after the application of all PS methods, was created. This figure is commonly referred to as a "love plot" (Greifer, 2025). A reference line at SMD = 0.1 was included to indicate the threshold for acceptable sufficient balance. The figure also helped compare the effectiveness of each PS method in reducing covariate imbalance. Also, a figure was created to show the proportion of times where the SMD $\geq$ 0.1 for each covariate across the 22 imputed datasets. This provided insight into the consistency of each PS method in achieving covariate balance and highlighted covariates that were particularly difficult to balance across imputations.
+
+The data supporting the findings of this thesis were provided by Flatiron Health, Inc. Data information and variable definition can be retrieved from Flatiron Knowledge Center. All analyses were conducted using the R version 4.3.3.
+
+```{=tex}
+\newpage
+\section*{Chapter 3}
+```
+# Results
+
+## Baseline Characteristics
+
+A total of 12,053 patients were included in the study cohort, all of whom received 1L treatment within 60 days of their MM diagnosis (Figure 1). There were more White (N = 6,163) and "Unknown/Missing" race/ethnicity patients (N = 2,654), with fewer AA (N = 1,829), HL (N = 732), "Other Races" race/ethnicity (N = 492), and Asian patients (N = 183) (Table 1). After multiple imputation, "Unknown/Missing" race/ethnicity values were imputed across race/ethnicity groups. On average, across 22 imputations, approximately 65.3% of the 2,654 imputed values were assigned to White patients, 19.7% to AA patients, 2.0% to Asian patients, 5.0% to "Other Races" patients, and 8.0% to HL patients.
+
+For demographics, the Chi-squared test results indicated that covariates of age at 1L treatment, sex at birth, ECOG performance status, ISS stage, ASCT, year of diagnosis, site of care, and SES quintile differed significantly acorss race/ethnicity groups among MM patients, indicating potential disparities in these baseline characteristics within the study cohort (p\<0.05). Notably, White and “Unknown/Missing” race/ethnicity patients were more likely to be diagnosed at age 65 or older compared to AA, Asian, HL patients, and “Other Races” (67.4% in White, 69.3% in Unknown/Missing vs. 56.7% in AA, 55.2% in Asian, 56.1% in HL, 62.4% in Other Races). AA patients were more likely to be female compared to the other race/ethnicity groups (55.0% in AA vs. 42.4% in White, 38.3% in Asian, 46.9% in HL, 49.6% in Other Races, 44.9% in Unknown/Missing). There was higher proportion of patients with ASCT “No/Unknown” at baseline across all race/ethnicity groups compared to those who received ASCT, particularly among AA, Other Races, and "Unknown/Missing" (73.4% in AA, 73.2% in Other Races, 75.7% in Unknown/Missing vs. 67.4% in White, 67.2% in Asian, 67.8% in HL). Across all race/ethnicity groups, most patients were diagnosed during the periods of "2015-2019" and "2020-2024," and treated in community centers (Table 1).
+
+There was high missingness in biomarker data, including renal insufficiency status, hypercalcemia status, anemia status, and ploidy, deletion 13q presence, and cytogenetic risk groups across all race/ethnicity groups. Anemia status, hypercalcemia status, and deletion 13q presence were found to differ significantly among race/ethnicity groups (p\<0.05).
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+![](2025-04-21_16-17-28.png){width="400"}
+
+**Figure 1** Cohort Selection flowchart of patients diagnosed with MM from January 1, 2011 to May 31, 2024 and received 1L treatment within 60 days of diagnosis.
+
+::: {=latex}
+```{=tex}
+\begin{minipage}{\textwidth}
+\centering
+\includegraphics[width=\textwidth]{table_1_main.png}
+
+\textbf{Table 1} Descriptive statistics among MM patients by race/ethnicity
+\end{minipage}
+```
+:::
+
+## Balance Diagnostics
+
+### PS Diagnostics
+
+Figures 2.1–2.4 show PS distributions in the original data and after the application of various PS methods for each race/ethnicity group comparison. In the original data (Panels A), moderate imbalance was observed between White and non-White patients across all comparisons, with limited overlap in the tails of the PS distributions. After applying NNM with and without a caliper distance, as well as optimal matching (Panels B–D), the PS distributions became more comparable within each group comparison, typically showing an overlap in the range of 0.05 to 0.2.
+
+After the applications of stabilized IPTW and IPTW with 5% trimming an (Panels E–F), White patients consistently had weights centered around 1, while AA, Asian, HL, and Other Races patients demonstrated wider and more extreme weight distributions. Particularly, all Asian patients were excluded under IPTW with 5% trimming. PS stratification (Figures 3A–3D) further demonstrated improved balance within strata, with substantial PS overlap in strata 2–4 across most groups; however, the PS overlap remained limited in strata 1 and 5, particularly for comparisons between White vs. AA and White vs. HL patients.
+
+Sample loss summaries (Supplementary Tables 2.1-2.4) highlight trade-offs of each PS matching and weighting method. Nearly all non-White patients were retained in matching methods. NNM with a caliper distance led to minimal loss in non-White groups (97.7%–99.7%) and a large exclusion of White patients. After applying IPTW with 5% trimming, 93.5% to 94.6% of White patients were retained, but significantly fewer non-White patients were retained: 78.2% for AA, 53.1% for HL, 31.9% for Other Races, and 0% for Asian patients. These diagnostics indicate that while PS methods improved covariate balance, trimming and matching led to differential sample loss across race/ethnicity groups, with implications for generalizability.
+
+```{r fig.height=11, fig.width=10, echo=FALSE, warning= FALSE}
+library(ggplot2)
+#install.packages("patchwork")
+library(patchwork)
+# Load plots
+plot1 <- readRDS("African American_unmatched_ps.rds") + ggtitle("A. Original Data")
+plot2 <- readRDS("African American_NNM_PS.rds") + ggtitle("B. NNM")
+plot3 <- readRDS("African American_NNM_0.1_PS.rds") + ggtitle("C. NNM (caliper = 0.2)")
+plot4 <- readRDS("African American_optimal_PS.rds") + ggtitle("D. Optimal Matching")
+plot5 <- readRDS("African American_sta_iptw.rds") + ggtitle("E. Stabilized IPTW")+ theme(legend.position = "none")
+plot6 <- readRDS("African American_trimming.rds") + ggtitle("F. IPTW (5% Trimming)") + theme(legend.position = "none")
+
+# Combine with layout and overall title
+final_plot <- (plot1 | plot2) / (plot3 | plot4)/ (plot5 | plot6) +
+plot_layout(guides = "collect") 
+
+# Apply bottom legend
+final_plot & theme(legend.position = "bottom")
+```
+
+**Figure 2.1** PS distributions in the original data and after applying PS methods between White and AA patients.
+
+```{r fig.height=11, fig.width=10, echo=FALSE}
+library(ggplot2)
+#install.packages("patchwork")
+library(patchwork)
+# Load plots
+plot1 <- readRDS("Asian_unmatched_ps.rds") + ggtitle("A. Original Data")
+plot2 <- readRDS("Asian_NNM_PS.rds") + ggtitle("B. NNM")
+plot3 <- readRDS("Asian_NNM_0.1_PS.rds") + ggtitle("C. NNM (caliper = 0.2)")
+plot4 <- readRDS("Asian_optimal_PS.rds") + ggtitle("D. Optimal Matching")
+plot5 <- readRDS("Asian_sta_iptw.rds") + ggtitle("E. Stabilized IPTW")+ theme(legend.position = "none")
+plot6 <- readRDS("Asian_trimming.rds") + ggtitle("F. IPTW (5% Trimming)") + theme(legend.position = "none")
+
+# Combine with layout and overall title
+final_plot <- (plot1 | plot2) / (plot3 | plot4)/ (plot5 | plot6) +
+plot_layout(guides = "collect") 
+
+# Apply bottom legend
+final_plot & theme(legend.position = "bottom")
+
+```
+
+**Figure 2.2** PS distributions in the original data and after applying PS methods between White and Asian patients.
+
+```{r fig.height=11, fig.width=10, echo=FALSE}
+library(ggplot2)
+#install.packages("patchwork")
+library(patchwork)
+# Load plots
+plot1 <- readRDS("Hispanic or Latino_unmatched_ps.rds") + ggtitle("A. Original Data")
+plot2 <- readRDS("Hispanic or Latino_NNM_PS.rds") + ggtitle("B. NNM")
+plot3 <- readRDS("Hispanic or Latino_NNM_0.1_PS.rds") + ggtitle("C. NNM (caliper = 0.2)")
+plot4 <- readRDS("Hispanic or Latino_optimal_PS.rds") + ggtitle("D. Optimal Matching")
+plot5 <- readRDS("Hispanic or Latino_sta_iptw.rds") + ggtitle("E. Stabilized IPTW")+ theme(legend.position = "none")
+plot6 <- readRDS("Hispanic or Latino_trimming.rds") + ggtitle("F. IPTW (5% Trimming)") + theme(legend.position = "none")
+
+# Combine with layout and overall title
+final_plot <- (plot1 | plot2) / (plot3 | plot4)/ (plot5 | plot6) +
+plot_layout(guides = "collect") 
+
+# Apply bottom legend
+final_plot & theme(legend.position = "bottom")
+```
+
+**Figure 2.3** PS distributions in the original data and after applying PS methods between White and HL patients.
+
+```{r fig.height=11, fig.width=10, echo=FALSE}
+library(ggplot2)
+#install.packages("patchwork")
+library(patchwork)
+# Load plots
+plot1 <- readRDS("Other Races_unmatched_ps.rds") + ggtitle("A. Original Data")
+plot2 <- readRDS("Other Races_NNM_PS.rds") + ggtitle("B. NNM")
+plot3 <- readRDS("Other Races_NNM_0.1_PS.rds") + ggtitle("C. NNM (caliper = 0.2)")
+plot4 <- readRDS("Other Races_optimal_PS.rds") + ggtitle("D. Optimal Matching")
+plot5 <- readRDS("Other Races_sta_iptw.rds") + ggtitle("E. Stabilized IPTW")+ theme(legend.position = "none")
+plot6 <- readRDS("Other Races_trimming.rds") + ggtitle("F. IPTW (5% Trimming)") + theme(legend.position = "none")
+
+# Combine with layout and overall title
+final_plot <- (plot1 | plot2) / (plot3 | plot4)/ (plot5 | plot6) +
+plot_layout(guides = "collect") 
+
+# Apply bottom legend
+final_plot & theme(legend.position = "bottom")
+```
+
+**Figure 2.4** PS distributions in the original data and after applying PS methods between White and Other Races patients.
+
+```{r fig.height=11, fig.width=10, echo=FALSE}
+plot1 <- readRDS("African American_PS stratification.rds") + ggtitle("A. White vs. African American")
+plot2 <- readRDS("Asian_PS stratification.rds") + ggtitle("B. White vs. Asian")
+plot3 <- readRDS("Hispanic or Latino_PS stratification.rds") + ggtitle("C. White vs. Hispanic or Latino")
+plot4 <- readRDS("Other Races_PS stratification.rds") + ggtitle("D. White vs. Other Races")
+
+
+# Combine with layout and overall title
+final_plot <- (plot1 | plot2) / (plot3 | plot4) 
+final_plot
+
+```
+
+**Figure 3** PS distributions by stratum after applying stratification between White and other race/ethnicity group patients.
+
+### Covariate Balance Diagnostics
+
+Figure 4 presents love plots showing SMDs for baseline covariates before and after adjustment using various PS methods across four race/ethnicity comparisons: White vs. AA (Figure 4A), White vs. Asian (Figure 4B), White vs. HL (Figure 4C), and White vs. Other Races (Figure 4D). A vertical reference line at SMD = 0.1 represents the threshold used for acceptable covariate balance.
+
+In the original data, substantial imbalance was observed across all four comparisons. Covariates such as SES quintile, sex at birth, age at 1L treatment, practice type, ISS stage, anemia status, and year of diagnosis frequently showed SMDs $\geq$ 0.1. Notably, SES quintile demonstrated the most pronounced imbalance in comparisons between White vs. AA, Asian, and HL patients, while site of care had the highest SMD in the White vs. Other Races comparison (Figure 2 & Supplementary Table 1).
+
+Covariate balance improved after applying certain PS methods. In the White vs. AA comparison, balance was achieved across most methods, although IPTW with 5% trimming failed to balance SES quintile, sex at birth, and age at 1L treatment (SMD \> 0.1), and PS stratification failed to balance cytogenetic risk group, site of care, and SES. For the White vs. Asian comparison, balance was achieved across most covariates after the applications of stabilized IPTW and NNM methods with and without a caliper distance. In contrast, stratification and optimal matching showed poorer performance, with even some covariates having larger SMDs than in the original data. In the White vs. HL comparison, balance was generally achieved across all methods, except IPTW with 5% trimming, which led to greater SMDs than the original data in more than half of all covariates. PS stratification also performed poorly, failing to balance most covariates with SMDs around 0.1. While NNM methods performed well overall, the SMD for year of diagnosis increased slightly after optimal matching. In the White vs. Other Races comparison, stabilized IPTW and both NNM methods with and without a caliper distance achieved acceptable balance, with optimal matching also performing relatively well (only year of diagnosis had SMD \> 0.1). PS stratification showed the unstable performance, leaving multiple covariates imbalanced with SMDs around 0.1, and IPTW with 5% trimming performed poorly with all covariates having greater SMDs than the original data (Figure 4).
+
+Overall, stabilized IPTW and NNM with or without a caliper distance consistently achieved the greatest reductions in covariate imbalance across all comparisons, frequently bringing all or nearly all SMDs below the 0.1 threshold. Optimal matching performed relatively well, with only a few covariates tending to have higher SMDs. In contrast, stratification and IPTW with 5% trimming were less effective and more sensitive to subgroup size, particularly in comparisons involving smaller race/ethnicity groups (e.g., Other Races patients).
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r fig.height=8, fig.width=10, echo=FALSE, warning=FALSE}
+library(ggplot2)
+#install.packages("patchwork")
+library(patchwork)
+# Load plots
+plot1 <- readRDS("African American_balance.rds") + ggtitle("A. White vs. African American")
+plot2 <- readRDS("Asian_balance.rds") + ggtitle("B. White vs. Asian")
+plot3 <- readRDS("Hispanic or Latino_balance.rds") + ggtitle("C. White vs. Hispanic or Latino")
+plot4 <- readRDS("Other Races_balance.rds") + ggtitle("D. White vs. Other Races")
+
+# Combine with layout and overall title
+final_plot <- (plot1 | plot2) / (plot3 | plot4) +
+plot_layout(guides = "collect") 
+
+# Apply bottom legend
+final_plot & theme(legend.position = "bottom")
+```
+
+**Figure 4** Love plots showing covariate balance before and after applying PS methods.
+
+## Survival Analyses
+
+### OS
+
+Figure 5.1-5.4 demonstrates HR estimates and 95% CIs comparing OS between White and other race/ethnicity group patients using various PS methods. In Figure 5.1, AA patients demonstrated longer OS compared to White patients (HR range: 0.81-0.87). Consistent results were observed across PS methods, with the strongest effect seen in the NNM without a caliper distance and using PS as a covariate methods (HRs = 0.81, 95% CIs: 0.74-0.88). All 95% CIs excluded 1, indicating statistically significant differences in OS that persisted after applying PS methods, demonstrating consistent OS disparities between White and AA patients even after balancing baseline characteristics. In Figure 5.2, Asian patients demonstrated longer OS compared to White patients (HR range: 0.59–0.68). The association remained consistent and statistically significant across PS methods, except for optimal matching, which led to a 95% CI crossing 1, indicating marginal non-significance. Additionally, the 95% CIs were wider in PS matching methods compared to other methods. In Figure 5.3, HL patients demonstrated longer OS compared to White patients (HR range: 0.72–0.76). The association between race/ethnicity and OS remained statistically significant across all methods, indicating consistent OS disparities even after balancing baseline characteristics between White and HL patients. The 95% CIs appeared to be of similar width across methods, suggesting similar statistical significance of the results. In Figure 5.4, unlike the other comparisons, no statistically significant difference in OS was observed between White patients and Other Races patients. All estimates were close to the null (HR range: 1.04–1.12), and 95% CIs consistently included 1. These results were consistent with the results of the complete case analysis (Supplementary Figures 2.1-2.4).
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,fig.width=8,fig.height=3, echo=FALSE}
+table  <- readRDS("African American_Forest.rds")
+print(table)
+table
+```
+
+**Figure 5.1** Forest plot showing HRs and 95% CIs comparing OS between White and African American.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,fig.width=8,fig.height=3, echo=FALSE}
+table  <- readRDS("Asian_Forest.rds")
+print(table)
+```
+
+**Figure 5.2** Forest plot showing HRs and 95% CIs comparing OS between White and Asian. IPTW with 5% trimming was not applied as all Asian patients were excluded after trimming.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,fig.width=8,fig.height=3, echo=FALSE}
+
+table  <- readRDS("Hispanic or Latino_Forest.rds")
+print(table)
+```
+
+**Figure 5.3** Forest plot showing HRs and 95% CIs comparing OS between White and Hispanic or Latino.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,fig.width=8,fig.height=3, echo=FALSE}
+
+table  <- readRDS("Other Races_Forest.rds")
+print(table)
+```
+
+**Figure 5.4** Forest plot showing HRs and 95% CIs comparing OS between White and Other Races.
+
+### TTNT
+
+Figure 6.1-6.4 demonstrates HR estimates and 95% CIs comparing TTNT between White and other race/ethnicity group patients using various PS methods. In Figure 6.1, AA patients demonstrated significantly longer TTNT compared to White patients (HR range: 0.89–0.91), with consistent results were observed across crude, covariate adjustment and PS methods. All 95% CIs of PS methods excluded 1, indicating statistically significant differences in TTNT that persisted after balancing baseline characteristics between White and AA patients. In contrast, Figure 6.2 shows that Asian patients demonstrated comparable TTNT to White patients (HR range: 0.87-0.94). Although HR estimates were generally below 1, the 95% CIs crossed 1 across all PS methods, indicating no statistically significant differences in TTNT between Asian and White patients. Additionally, the 95% CIs were wider in PS matching methods compared to other PS methods. In Figure 6.3, HL patients also demonstrated comparable TTNT to White patients (HR range: 0.88–0.92). While several PS methods, including NNM with and without a caliper distance and using PS as a covariate yielded statistically significant results, other methods, including optimal matching, IPTW with 5% trimming, stabilized IPTW, and PS stratification yielded 95% CIs crossing 1, suggesting marginal or no statistical significance. This variability highlighted some sensitivity of the results to the choice of PS method but overall suggested no evidence of disparity in TTNT between HL and White patients. In Figure 6.4, no statistically significant differences in TTNT were observed between White patients and Other Races patients (HR range: 0.96–1.01), with 95% CIs consistently crossing 1 across PS methods, suggesting no evidence of disparity in TTNT between Other Races and White patients. These results were consistent with the results of the complete case analysis (Supplementary Figures 3.1-3.4).
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,fig.width=8,fig.height=3, echo=FALSE}
+table  <- readRDS("African American_TTNT Forest.rds")
+print(table)
+```
+
+**Figure 6.1** Forest plot showing HRs 95% CIs comparing TTNT between White and AA patients.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,fig.width=8,fig.height=3, echo=FALSE}
+table  <- readRDS("Asian_TTNT Forest.rds")
+print(table)
+```
+
+**Figure 6.2** Forest plot showing HRs 95% CIs comparing TTNT between White and Asian patients. IPTW with 5% trimming was not applied as all Asian patients were excluded after trimming.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,fig.width=8,fig.height=3, echo=FALSE}
+
+table  <- readRDS("Hispanic or Latino_TTNT Forest.rds")
+print(table)
+```
+
+**Figure 6.3** Forest plot showing HRs 95% CIs comparing TTNT between White and HL patients.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,fig.width=8,fig.height=3, echo=FALSE}
+
+table  <- readRDS("Other Races_TTNT Forest.rds")
+print(table)
+```
+
+**Figure 6.4** Forest plot showing HRs 95% CIs comparing TTNT between White and Other Races patients.
+
+```{=tex}
+\newpage
+\section*{Chapter 4}
+```
+# Discussion
+
+## Racial Disparities
+
+This study assessed racial disparities in MM outcomes in the US using RWD from the Flatiron Health database, focusing on OS and TTNT. To address confounding, seven PS methods were applied, including NNM with and without a caliper distance, optimal matching, stabilized IPTW, IPTW with 5% trimming, PS stratification, and using PS as a covariate.
+
+Significant superior OS was identified for AA, Asian, and HL patients compared to White patients across nearly all PS methods, which balanced demographic and biomarker covariates. These findings align with recent real-world studies, where Jayakrishnan et al. (2021), Fiala et al. (2017), and Costa et al. (2017) found that, after adjusting for key demographic, biomarker, and socioeconomic variables, AA patients demonstrated superior outcomes. However, some of our findings differ from earlier registry-based racial disparities analyses such as those by Waxman et al. (2010) and Ailawadhi et al. (2017) which identified worse MM health outcomes among AA patients compared to White patients. These discrepancies may stem from fundamental differences in study design and data sources, as well as variations in treatment received, socioeconomic status, and race/ethnicity representation. Registry data may overrepresent certain race/ethnicity groups compared to the US census and often lack sufficient information on patients' biomarker status, longitudinal treatment sequences, and disease progression (Ma et al., 2020). In contrast, the Flatiron Health database may reflect longitudinal clinical data from oncology practices at both community and academic centers, where patients are more likely to be receiving specialized care,potentially reducing the influence of access-related disparities (Flatiron Health, 2025; Gasoyan et al., 2023; Jayakrishnan et al., 2021; Ma et al., 2020). A recent systematic literature review by Mikhael et al. (2024) also highlighted that, when RWD included diverse, nationally representative cohorts with detailed clinical, treatment, and socioeconomic information, OS most often favored AA patients. These findings further supported that using Flatiron Health database and advanced statistical approaches were crucial to accurately assess and reflect actual racial disparities in MM health outcomes (Ma et al., 2020; Ro et al., 2023). They also suggested that racial disparities in OS among MM patients might be closely tied to structural barriers within the healthcare system, although biological or genetic factors could still play a role (Baker et al., 2013).
+
+The findings revealed a more nuanced pattern for TTNT, which may reflect clinical decision-making, disease progression, and patient preference (Blumenthal et al., 2019; Vo et al., 2022). Among AA patients, significantly longer TTNT was observed compared to White patients across multiple PS methods. This reflected longer progression from 1L to 2L therapy or death, which may be influenced favorable treatment response, underlying disease biology, or differences in treatment adherence (Goldman-Mazur et al., 2023). While prior studies have reported delays in the initiation of novel therapies among AA patients compared to White patients, the current findings suggested that among those who received 1L therapy, AA patients may experience longer intervals before requiring subsequent treatment (Aliawadhi et al., 2019; Maignan et al., 2022). These results also raised the possibility that disparities in access to novel agents may emerge at the time of 2L initiation, as some novel therapies are often introduced in later lines of treatment (Kumar et al., 2014; Sonneveld, 2017). No significant disparities in TTNT were observed among Asian, HL, or Other Races patients compared to White patients, suggesting that the interval from 1L to 2L or death among these groups may be less influenced by race/ethnicity. This may reflect equitable treatment sequencing once these race/ethnicity patients were engaged in care, particularly within structured oncology networks that include both community and academic practices.
+
+In summary, these findings emphasized that examining both TTNT and OS provided complementary insights into racial disparities in MM health outcomes and highlighted the need to address potential racial disparities throughout MM patients' care. The consistent findings of longer OS and TTNT among AA patients compared to White patients further suggested that AA patients tended to have superior MM health outcomes when their characteristics were balanced.
+
+## PS Method Performances
+
+The comparison of seven PS methods revealed meaningful differences in covariate balance, sample retention, and race/ethnicity group representation. PS matching methods highlighted the trade-offs between match quality, bias reduction, and sample retention, particularly relevant in real-world studies of racial disparities.
+
+In this study, NNM, both with and without a caliper distance, demonstrated strong performance in achieving covariate balance between race/ethnicity groups. While NNM with a caliper distance of 0.2 times the standard deviation of the logit-transformed PS is a robust method for bias reduction, its application can lead to the exclusion of patients from smaller race/ethnicity groups due to limited overlap in PS distributions (Austin, 2015). In this study, the retained samples and effect estimates of race/ethnicity were consistent across NNM methods, suggesting that the choice between NNM with and without a caliper distance may be interchangeable, particularly when PS overlap was adequate. Optimal matching performed comparably to NNM in race/ethnicity comparisons involving White and AA and HL patients. However, covariate imbalance remained for smaller groups (e.g., Asian and Other Races), especially for patients' age at 1L treatment, SES, and year of diagnosis.
+
+Stabilized IPTW improved the precision and stability of race/ethnicity effect estimates while preserving the full cohort, as supported by Austin & Stuart (2015) and Cole & Hernán (2008). Compared to standard IPTW, stabilization reduced variance inflation while maintaining the balancing properties of IPTW (Robins et al., 2000). In this study, stabilized IPTW produced consistent and stable effect estimates across all race/ethnicity comparisons for both OS and TTNT outcomes. Covariate balance was achieved across most covariates, including in comparisons involving smaller race/ethnicity groups such as Asian and Other Races patients. By contrast, IPTW with 5% trimming led to sample loss and unstable covariate balance in comparisons involving smaller race/ethnicity groups. Notably, nearly all Asian patients were excluded under 5% trimming due to their extreme weights, and large SMDs remained in comparisons involving HL and Other Races vs. White groups. Although trimming enhanced statistical performances by reducing variance, it introduces selection bias and limits generalizability. This trade-off was well-documented (Hernán & Robins, 2020) and underscored the need to select trimming thresholds based on both statistical properties and research priorities. Therefore, stabilized IPTW preserved population representativeness by retaining patients from all race/ethnicity groups, whereas IPTW with trimming may be more suitable for settings where extreme weights pose major analysis challenges, and race/ethnicity group representation is not a main concern.
+
+PS stratification achieved moderate covariate balance in the middle strata (Strata 2–4), but imbalances remained mostly in the lowest and highest strata (Strata 1 and 5) with limited PS overlap between two race/ethnicity groups, likely due to small sample sizes and heterogeneity within these strata. Also, although this method can eliminate up to 90% of bias due to measured confounders (Rosenbaum & Rubin, 1984), its performance may be limited in survival analyses where few outcome events occur within strata. This can reduce the precision and stability of race/ethnicity effect estimates and potentially increase bias. The key strengths of PS stratification include its simplicity and full-sample retention. It avoids trimming or matching, preserving underrepresented groups that may be excluded under other methods. However, the method assumes homogeneity of covariates within strata, an assumption that may not hold in racial disparities research if there were skewed PS distributions from two race/ethnicity groups.
+
+Including the PS as an additional covariate mostly yielded estimates for OS and TTNT that were consistent with those from other PS methods. This approach retained all patients in the analysis, was straightforward to implement, and preserved representation of small and underrepresented groups, thus maintaining statistical power. However, a limitation of this method is that if the relationship between covariates, PS, and the outcome is not adequately specified, or if the PS does not fully capture confounding related to race/ethnicity, it may yield biased estimates in Cox models. While it can serve as a useful sensitivity analysis or benchmark approach, it is not optimal when covariate imbalance is substantial or when confounding structures are complex, as is often the case in RWD racial disparities research. It is critical to weigh its practical advantages against its vulnerability to bias from residual confounding and model misspecification.
+
+In summary, our findings highlighted that no single PS method consistently outperformed others across all race/ethnicity groups comparisons. Each method involved trade-offs between bias reduction, covariate balance, sample retention, and small group representation, factors that were especially relevant when analyzing outcomes among racially diverse or underrepresented populations. Therefore, when studying racial disparities, researchers should select PS methods aligned with specific study goals. When subgroup inclusion and representativeness are important, such as when examining disparities in underrepresented populations, methods like stabilized IPTW, PS matching, and PS stratification may be preferred. In contrast, when minimizing confounding and bias is the priority, approaches like IPTW with trimming may be more appropriate, but researchers must be cautious about the risk of excluding key race/ethnicity groups. Applying and comparing multiple PS methods, supported by clear diagnostics and sensitivity analyses, is critical to producing valid, equitable, and generalizable evidence in real-world racial disparities research.
+
+## Strengths and Limitations
+
+This study has several strengths that enhanced its reliability and generalizability. First, multiple PS methods were applied to address covariate imbalance and evaluate racial disparities in MM health outcomes. Using multiple PS methods with survival analysis enabled more consistent estimation of the race/ethnicity effect, and adjusting for demographic and biomarker characteristics further strengthened the robustness of disparity estimates across methods (Austin, 2011; Stuart, 2010).
+
+Second, analyzing two endpoints of OS and TTNT increased the comprehensiveness of the assessment. While OS is widely regarded as a gold-standard endpoint in oncology research, TTNT provides additional insight into treatment patterns across race/ethnicity groups, which may be influenced by differences in therapy access, clinical decision-making, and patient preference (Jayakrishnan et al., 2021). Evaluating both endpoints allowed for a more holistic assessment of PS method performance in estimating racial disparities and generated more complete conclusions regarding MM health outcomes.
+
+Third, another key strength of this study was the use of multiple imputation to address approximately 22% missing race/ethnicity data. Relying on complete case analysis would have excluded a large amount of patients, introducing bias due to differential missingness. Multiple imputation preserved the full sample, enhanced the accuracy of race/ethnicity effect estimation, and improved generalizability, particularly for smaller race/ethnicity groups. Sensitivity analyses comparing results from imputed and complete case datasets revealed consistent trends and effect estimates, further reinforcing the robustness of the findings (White et al., 2011).
+
+Fourth, the use of a large, nationally representative real-world dataset from Flatiron Health ensured the inclusion of diverse patient populations, along with detailed clinical information such as treatment sequences, biomarker status, and disease progression, data that are often unavailable in traditional cancer registries like SEER or the National Program of Cancer Registries (NPCR) (Ma et al., 2020). Moreover, Flatiron’s patient population more closely reflects the US census, enhancing the representation of underrepresented groups and improving the generalizability of findings (Azoulay, 2022; Castellanos et al., 2024; Ma et al., 2020). This is particularly valuable in racial disparities research, where the underrepresentation of minority populations in clinical trials limits insights into real-world inequities in treatment and outcomes (Birnbaum et al., 2020).
+
+Despite these strengths, this study had several limitations. First, treatment regimens were not included as covariates due to concerns about potential misclassification arising from claims-based definitions of treatment lines. Treatment is often a key time-varying determinant of MM outcomes, but inconsistencies in how EHR systems capture treatment information may compromise data reliability and introduce bias. Second, the use of the “Other Races” category may have compromised the heterogeneity among race/ethnicity subgroups, limiting interpretability and obscuring disparities specific to smaller, more distinct populations. Third, the study may be subject to immortal time bias, as patients had to survive long enough to receive treatment and be included in the analysis (patients who received 1L treatment within 60 days of diagnosis), impacting both OS and TTNT analyses.
+
+## Implications and Future Research
+
+This study has several important implications for research, policy, and clinical practice related to health equity in MM. First, the consistent pattern of racial disparities in OS observed across a range of PS methods underscores the ongoing need to address structural barriers to care, ensure equitable access to timely and effective treatment, and improve the representation of minority race/ethnicity groups in MM health outcomes research (Marinac et al., 2020; Mikhael et al., 2024). The more favorable OS observed among non-White patients in this study may be partially explained by the use of a large, nationally representative Flatiron RWD and robust adjustment for access-related covariates. This highlights the importance of using equitable data sources and rigorous methodologies when assessing racial disparities in health outcomes. It remains critical to optimize healthcare resource allocation and reduce inequities in MM outcomes across different race/ethnicity groups to ensure that all MM patients receive treatment benefits equitably in the US.
+
+From a methodological perspective, this study demonstrates the importance of selecting appropriate covariate balancing approaches when evaluating racial disparities using RWD. Stabilized IPTW consistently achieved strong covariate balance while preserving sample size, but it is still important that future research evaluates multiple PS strategies to ensure the robustness of findings and select an optimal one under the specific research context (Austin & Stuart, 2015; Chen et al., 2022). Also, future studies should consider incorporating time-varying covariates in Cox PH models (e.g., biomarker levels, treatment status) to better capture changes in clinical risk profiles over time (Therneau & Grambsch, 2000).
+
+Importantly, this research highlights the research gap related to potential biological drivers of racial disparities in MM. Prior studies have suggested that AA patients may have a lower prevalence of high-risk cytogenetic abnormalities and more favorable immunological profiles, which may imply prognostic advantages under equitable treatment access (Ailawadhi et al., 2012; Baker et al., 2013; Mikhael et al., 2024). Future research should incorporate molecular profiling and tumor biology alongside demographic and socioeconomic data to better understand the contributions of biological and structural determinants to racial disparities in MM health outcomes.
+
+# References
+
+Ailawadhi, S., Aldoss, I. T., Yang, D., Razavi, P., Cozen, W., Sher, T., & Chanan-Khan, A. (2012). Outcome disparities in multiple myeloma: a SEER-based comparative analysis of ethnic subgroups. British journal of haematology, 158(1), 91–98. https://doi.org/10.1111/j.1365-2141.2012.09124.x
+
+Ailawadhi, S., Frank, R. D., Advani, P., Swaika, A., Temkit, M., Menghani, R., Sharma, M., Meghji, Z., Paulus, S., Khera, N., Hashmi, S. K., Paulus, A., Kakar, T. S., Hodge, D. O., Colibaseanu, D. T., Vizzini, M. R., Roy, V., Colon-Otero, G., & Chanan-Khan, A. A. (2017). Racial disparity in utilization of therapeutic modalities among multiple myeloma patients: a SEER-medicare analysis. Cancer medicine, 6(12), 2876–2885. https://doi.org/10.1002/cam4.1246
+
+Ailawadhi, S., Jacobus, S., Sexton, R., Stewart, A. K., Dispenzieri, A., Hussein, M. A., Zonder, J. A., Crowley, J., Hoering, A., Barlogie, B., Orlowski, R. Z., & Rajkumar, S. V. (2018). Disease and outcome disparities in multiple myeloma: exploring the role of race/ethnicity in the Cooperative Group clinical trials. Blood cancer journal, 8(7), 67. https://doi.org/10.1038/s41408-018-0102-7
+
+Ailawadhi, S., Parikh, K., Abouzaid, S., Zhou, Z., Tang, W., Clancy, Z., Cheung, C., Zhou, Z. Y., & Xie, J. (2019). Racial disparities in treatment patterns and outcomes among patients with multiple myeloma: a SEER-Medicare analysis. Blood advances, 3(20), 2986–2994. https://doi.org/10.1182/bloodadvances.2019000308
+
+Attal, M., Moreau, P., Avet-Loiseau, H., & Harousseau, J.-L. (2007). Stem cell transplantation in multiple myeloma. Hematology, 2007(1), 311–316. https://doi.org/10.1182/asheducation-2007.1.311
+
+Austin P. C. (2011). An Introduction to Propensity Score Methods for Reducing the Effects of Confounding in Observational Studies. Multivariate behavioral research, 46(3), 399–424. https://doi.org/10.1080/00273171.2011.568786
+
+Austin, P. C., & Mamdani, M. M. (2006). A comparison of propensity score methods: a case-study estimating the effectiveness of post-AMI statin use. Statistics in medicine, 25(12), 2084–2106. <https://doi.org/10.1002/sim.2328>
+
+Austin P. C. (2011). Optimal caliper widths for propensity-score matching when estimating differences in means and differences in proportions in observational studies. Pharmaceutical statistics, 10(2), 150–161. https://doi.org/10.1002/pst.433
+
+Austin, P. C., & Stuart, E. A. (2015). Moving towards best practice when using inverse probability of treatment weighting (IPTW) using the propensity score to estimate causal treatment effects in observational studies. Statistics in medicine, 34(28), 3661–3679. https://doi.org/10.1002/sim.6607
+
+Austin, P. C. (2016). Variance estimation when using inverse probability of treatment weighting (IPTW) with survival analysis. Statistics in Medicine, 35(30), 5642–5655. https://doi.org/10.1002/sim.7084
+
+Austin, P. C., & Stuart, E. A. (2017). Estimating the effect of treatment on binary outcomes using full matching on the propensity score. Statistical methods in medical research, 26(6), 2505–2525. https://doi.org/10.1177/0962280215601134
+
+Austin, P. C., & Cafri, G. (2020). Variance estimation when using propensity‐score matching with replacement with survival or time‐to‐event outcomes. Statistics in Medicine, 39(11), 1623–1640. https://doi.org/10.1002/sim.8502
+
+Austin, P. C., White, I. R., Lee, D. S., & van Buuren, S. (2021). Missing Data in Clinical Research: A Tutorial on Multiple Imputation. The Canadian journal of cardiology, 37(9), 1322–1331. https://doi.org/10.1016/j.cjca.2020.11.010
+
+Azur, M. J., Stuart, E. A., Frangakis, C., & Leaf, P. J. (2011). Multiple imputation by chained equations: what is it and how does it work?. International journal of methods in psychiatric research, 20(1), 40–49. https://doi.org/10.1002/mpr.329
+
+Baker, A., Braggio, E., Jacobus, S., Jung, S., Larson, D., Therneau, T., Dispenzieri, A., Van Wier, S. A., Ahmann, G., Levy, J., Perkins, L., Kim, S., Henderson, K., Vesole, D., Rajkumar, S. V., Jelinek, D. F., Carpten, J., & Fonseca, R. (2013). Uncovering the biology of multiple myeloma among African Americans: a comprehensive genomics approach. Blood, 121(16), 3147–3152. https://doi.org/10.1182/blood-2012-07-443606
+
+Benjamin, M., Reddy, S., & Brawley, O. W. (2003). Myeloma and race: a review of the literature. Cancer metastasis reviews, 22(1), 87–93. https://doi.org/10.1023/a:1022268103136
+
+Bertrand, K. A., & Szalat, R. (2024). Deciphering racial disparities in multiple myeloma outcomes. Blood advances, 8(1), 234–235. https://doi.org/10.1182/bloodadvances.2023011457
+
+Bhatnagar, V., Wu, Y., Goloubeva, O. G., Ruehle, K. T., Milliron, T. E., Harris, C. G., Rapoport, A. P., Yanovich, S., Sausville, E. A., Baer, M. R., & Badros, A. Z. (2015). Disparities in black and white patients with multiple myeloma referred for autologous hematopoietic transplantation: A single center study. Cancer, 121(7), 1064–1070. https://doi.org/10.1002/cncr.29160
+
+Birnbaum B., Nussbaum N., Seidl-Rathkopf K., et al. (2020). Model-assisted cohort selection with bias analysis for generating large-scale cohorts from the EHR for oncology research. arXiv:Preprint posted online January 13.
+
+Blumenthal, G. M., Gong, Y., Kehl, K., Mishra-Kalyani, P., Goldberg, K. B., Khozin, S., Kluetz, P. G., Oxnard, G. R., & Pazdur, R. (2019). Analysis of time-to-treatment discontinuation of targeted therapy, immunotherapy, and chemotherapy in clinical trials of patients with non-small-cell lung cancer. Annals of oncology : official journal of the European Society for Medical Oncology, 30(5), 830–838. https://doi.org/10.1093/annonc/mdz060
+
+Boscoe, F. P., Liu, B., & Lee, F. (2021). A comparison of two neighborhood-level socioeconomic indexes in the United States. Spatial and spatio-temporal epidemiology, 37, 100412. https://doi.org/10.1016/j.sste.2021.100412
+
+Carroll, O. U., Morris, T. P., & Keogh, R. H. (2020). How are missing data in covariates handled in observational time-to-event studies in oncology? A systematic review. BMC Medical Research Methodology, 20(1). https://doi.org/10.1186/s12874-020-01018-7
+
+Chen, C.-C., Parikh, K., Abouzaid, S., Purnomo, L., McGuiness, C. B., Hussein, M., & Wade, R. L. (2017). Real-world treatment patterns, time to next treatment, and economic outcomes in relapsed or refractory multiple myeloma patients treated with pomalidomide or carfilzomib. Journal of Managed Care & Specialty Pharmacy, 23(2), 236–246. https://doi.org/10.18553/jmcp.2017.23.2.236
+
+Chen, J. W., Maldonado, D. R., Kowalski, B. L., Miecznikowski, K. B., Kyin, C., Gornbein, J. A., & Domb, B. G. (2022). Best Practice Guidelines for Propensity Score Methods in Medical Research: Consideration on Theory, Implementation, and Reporting. A Review. Arthroscopy : the journal of arthroscopic & related surgery : official publication of the Arthroscopy Association of North America and the International Arthroscopy Association, 38(2), 632–642. https://doi.org/10.1016/j.arthro.2021.06.037
+
+Cochran, W. G. (1968). The effectiveness of adjustment by subclassification in removing bias in observational studies. Biometrics, 24(2), 295–313. https://doi.org/10.2307/2528036
+
+Cole, S. R., & Hernán, M. A. (2008). Constructing inverse probability weights for marginal structural models. American journal of epidemiology, 168(6), 656–664. https://doi.org/10.1093/aje/kwn164
+
+Costa, L. J., Brill, I. K., Omel, J., Godby, K., Kumar, S. K., & Brown, E. E. (2017). Recent trends in multiple myeloma incidence and survival by age, race, and ethnicity in the United States. Blood Advances, 1(4), 282–287. https://doi.org/10.1182/bloodadvances.2016002493
+
+Derman, B. A., Jasielec, J., Langerman, S. S., Zhang, W., Jakubowiak, A. J., & Chiu, B. C. (2020). Racial differences in treatment and outcomes in multiple myeloma: a multiple myeloma research foundation analysis. Blood cancer journal, 10(8), 80. https://doi.org/10.1038/s41408-020-00347-6
+
+Dong, J., Garacci, Z., Buradagunta, C. S., D'Souza, A., Mohan, M., Cunningham, A., Janz, S., Dhakal, B., Thrift, A. P., & Hari, P. (2022). Black patients with multiple myeloma have better survival than white patients when treated equally: a matched cohort study. Blood cancer journal, 12(2), 34. https://doi.org/10.1038/s41408-022-00633-5
+
+Fiala, M. A., & Wildes, T. M. (2017). Racial disparities in treatment use for multiple myeloma. Cancer, 123(9), 1590–1596. https://doi.org/10.1002/cncr.30526
+
+Fillmore, N. R., Yellapragada, S. V., Ifeorah, C., Mehta, A., Cirstea, D., White, P. S., Rivero, G., Zimolzak, A., Pyarajan, S., Do, N., Brophy, M., & Munshi, N. C. (2019). With equal access, African American patients have superior survival compared to white patients with multiple myeloma: a VA study. Blood, 133(24), 2615–2618. https://doi.org/10.1182/blood.2019000406
+
+Fonseca, R., Bergsagel, P. L., Drach, J., Shaughnessy, J., Gutierrez, N., Stewart, A. K., Morgan, G., Van Ness, B., Chesi, M., Minvielle, S., Neri, A., Barlogie, B., Kuehl, W. M., Liebisch, P., Davies, F., Chen-Kiang, S., Durie, B. G., Carrasco, R., Sezer, O., Reiman, T., … International Myeloma Working Group (2009). International Myeloma Working Group molecular classification of multiple myeloma: spotlight review. Leukemia, 23(12), 2210–2221. https://doi.org/10.1038/leu.2009.174
+
+Graham, J. W. (2012). Missing Data Analysis and Design. Springer New York.
+
+Grambsch, P. M., & Therneau, T. M. (1994). Proportional Hazards Tests and Diagnostics Based on Weighted Residuals. Biometrika, 81(3), 515–526. https://doi.org/10.2307/2337123
+
+Greifer, N. (2025). cobalt: Covariate Balance Tables and Plots.
+
+Greipp, P. R., San Miguel, J., Durie, B. G., Crowley, J. J., Barlogie, B., Bladé, J., Boccadoro, M., Child, J. A., Avet-Loiseau, H., Kyle, R. A., Lahuerta, J. J., Ludwig, H., Morgan, G., Powles, R., Shimizu, K., Shustik, C., Sonneveld, P., Tosi, P., Turesson, I., & Westin, J. (2005). International staging system for multiple myeloma. Journal of clinical oncology : official journal of the American Society of Clinical Oncology, 23(15), 3412–3420. https://doi.org/10.1200/JCO.2005.04.242
+
+Gu, X. S., & Rosenbaum, P. R. (1993). Comparison of Multivariate Matching Methods: Structures, Distances, and Algorithms. Journal of Computational and Graphical Statistics, 2(4), 405–420. https://doi.org/10.1080/10618600.1993.10474623
+
+Hamilton, N. S., Edelman, D., Weinberger, M., & Jackson, G. L. (2009). Concordance between self-reported race/ethnicity and that recorded in a Veteran Affairs electronic medical record. North Carolina medical journal, 70(4), 296–300.
+
+Hansen, B. B., & Klopfer, S. O. (2006). Optimal Full Matching and Related Designs via Network Flows. Journal of Computational and Graphical Statistics, 15(3), 609–627. https://doi.org/10.1198/106186006X137047
+
+Hernan, M. A., & Robins, J. M. (2020). Causal inference: What if. Taylor and Francis.
+
+Holland, P. W. (1986). Statistics and Causal Inference. Journal of the American Statistical Association, 81(396), 945–960. https://doi.org/10.1080/01621459.1986.10478354
+
+https://seer.cancer.gov/statfacts/html/mulmy.html 
+
+Hullsiek, K. H., & Louis, T. A. (2002). Propensity score modeling strategies for the causal analysis of observational data. Biostatistics (Oxford, England), 3(2), 179–193. https://doi.org/10.1093/biostatistics/3.2.179
+
+Imbens, G. W. (2004). Nonparametric estimation of average treatment effects under Exogeneity: A Review. Review of Economics and Statistics, 86(1), 4–29. https://doi.org/10.1162/003465304323023651
+
+Imbens, G. W. , & Rubin, D. B.  (2015). Causal inference for statistics, social, and Biomedical Sciences: An introduction. Cambridge University Press.
+
+Jayakrishnan, T. T., Bakalov, V., Chahine, Z., Lister, J., Wegner, R. E., & Sadashiv, S. (2021). Disparities in the enrollment to systemic therapy and survival for patients with multiple myeloma. Hematology/oncology and stem cell therapy, 14(3), 218–230. https://doi.org/10.1016/j.hemonc.2020.09.005
+
+Kumar, S., Paiva, B., Anderson, K. C., Durie, B., Landgren, O., Moreau, P., Munshi, N., Lonial, S., Bladé, J., Mateos, M. V., Dimopoulos, M., Kastritis, E., Boccadoro, M., Orlowski, R., Goldschmidt, H., Spencer, A., Hou, J., Chng, W. J., Usmani, S. Z., Zamagni, E., … Avet-Loiseau, H. (2016). International Myeloma Working Group consensus criteria for response and minimal residual disease assessment in multiple myeloma. The Lancet. Oncology, 17(8), e328–e346. https://doi.org/10.1016/S1470-2045(16)30206-6
+
+Kumar, S. K., & Rajkumar, S. V. (2018). The multiple myelomas - current concepts in cytogenetic classification and therapy. Nature reviews. Clinical oncology, 15(7), 409–421. https://doi.org/10.1038/s41571-018-0018-y
+
+Lee, B. K., Lessler, J., & Stuart, E. A. (2011). Weight trimming and propensity score weighting. PloS one, 6(3), e18174. https://doi.org/10.1371/journal.pone.0018174
+
+Li, Q., Zhang, H., Chen, Z., Guo, Y., George, T. J., Jr, Chen, Y., Wang, F., & Bian, J. (2022). Validation of Real-World Data-based Endpoint Measures of Cancer Treatment Outcomes. AMIA ... Annual Symposium proceedings. AMIA Symposium, 2021, 716–725.
+
+Lin, D. Y., & Wei, L. J. (1989). The Robust Inference for the Cox Proportional Hazards Model. Journal of the American Statistical Association, 84(408), 1074–1078. https://doi.org/10.1080/01621459.1989.10478874
+
+Little, R. J. A., & Rubin, D. B. (2020). Statistical analysis with missing data. Wiley.
+
+Lunceford, J. K., & Davidian, M. (2004). Stratification and weighting via the propensity score in estimation of causal treatment effects: a comparative study. Statistics in medicine, 23(19), 2937–2960. https://doi.org/10.1002/sim.1903
+
+Ma, X., Long, L., Moon, S., Adamson, B. J. S., & Baxi, S. S. (2023). Comparison of Population Characteristics in Real-World Clinical Oncology Databases in the US: Flatiron Health, Seer, and NPCR. https://doi.org/10.1101/2020.03.16.20037143
+
+Maignan, K., Fashoyin-Aje, L. A., Torres, A. Z., Fernandes, L. L., Gwise, T., Baxi, S. B., Roose, J. P., Rivera, D. R., Shen, Y. L., Kluetz, P. G., & Gormley, N. J. (2022). Exploring racial disparities in treatment patterns and outcomes for patients with multiple myeloma using real world data. Blood cancer journal, 12(4), 65. https://doi.org/10.1038/s41408-022-00665-x
+
+Maini, R., Alberti, M., Khan, M. A., Markabawi, D., Salup, A., & Badari, A. (2022). No evidence of racial survival disparity gap among blacks vs whites with multiple myeloma post autologous stem cell transplant: A study from over a decade. Blood, 140(Supplement 1), 13239–13239. https://doi.org/10.1182/blood-2022-170677
+
+Marinac, C. R., Ghobrial, I. M., Birmann, B. M., Soiffer, J., & Rebbeck, T. R. (2020). Dissecting racial disparities in multiple myeloma. Blood cancer journal, 10(2), 19. https://doi.org/10.1038/s41408-020-0284-7
+
+Mikhael, J., Cichewicz, A., Mearns, E. S., Girvan, A., Pierre, V., Rawashdh, N. A., Yellow-Duke, A., Cornell, R. F., & Nixon, M. (2024). Overall Survival in Patients With Multiple Myeloma in the U.S.: A Systematic Literature Review of Racial Disparities. Clinical lymphoma, myeloma & leukemia, 24(2), e1–e12. https://doi.org/10.1016/j.clml.2023.09.009
+
+Molenberghs, G., & Kenward, M. G. (2008). Missing data in clinical studies. Wiley.
+
+National Cancer Institute. Myeloma - Cancer Stat Facts \[Internet\]. SEER. Available from: https://seer.cancer.gov/statfacts/html/mulmy.html
+
+Normand, S. T., Landrum, M. B., Guadagnoli, E., Ayanian, J. Z., Ryan, T. J., Cleary, P. D., & McNeil, B. J. (2001). Validating recommendations for coronary angiography following acute myocardial infarction in the elderly: a matched analysis using propensity scores. Journal of clinical epidemiology, 54(4), 387–398. https://doi.org/10.1016/s0895-4356(00)00321-8
+
+Palumbo, A., Bringhen, S., Ludwig, H., Dimopoulos, M. A., Bladé, J., Mateos, M. V., Rosiñol, L., Boccadoro, M., Cavo, M., Lokhorst, H., Zweegman, S., Terpos, E., Davies, F., Driessen, C., Gimsing, P., Gramatzki, M., Hàjek, R., Johnsen, H. E., Leal Da Costa, F., … Sonneveld, P. (2011). Personalized therapy in multiple myeloma according to patient age and vulnerability: A report of the European Myeloma Network (EMN). Blood, 118(17), 4519–4529. https://doi.org/10.1182/blood-2011-06-358812
+
+Pulte, E. D., Nie, L., Gormley, N., Goldberg, K. B., McKee, A., Farrell, A., & Pazdur, R. (2018). Survival of ethnic and racial minority patients with multiple myeloma treated with newer medications. Blood advances, 2(2), 116–119. https://doi.org/10.1182/bloodadvances.2017010512
+
+Radhakrishnan, L., Lonial, S., & Nooka, A. K. (2015). Racial disparities in incidence and survival for patients with multiple myeloma in the United States. Blood, 126(23), 4508–4508. https://doi.org/10.1182/blood.v126.23.4508.4508
+
+Repetto, L., Fratino, L., Audisio, R. A., Venturino, A., Gianni, W., Vercelli, M., Parodi, S., Dal Lago, D., Gioia, F., Monfardini, S., Aapro, M. S., Serraino, D., & Zagonel, V. (2002). Comprehensive geriatric assessment adds information to Eastern Cooperative Oncology Group Performance Status in elderly cancer patients: An Italian group for Geriatric Oncology Study. Journal of Clinical Oncology, 20(2), 494–502. https://doi.org/10.1200/jco.2002.20.2.494
+
+Ro, S. K., Zhang, W., Jiang, Q., Li, X. N., Liu, R., Lu, C. C., Marchenko, O., Sun, L., & Zhao, J. (2023). Statistical Considerations on the Use of RWD/RWE for Oncology Drug Approvals: Overview and Lessons Learned. Therapeutic innovation & regulatory science, 57(4), 899–910. https://doi.org/10.1007/s43441-023-00528-y
+
+Robins, J. M., Hernán, M. A., & Brumback, B. (2000). Marginal structural models and causal inference in epidemiology. Epidemiology (Cambridge, Mass.), 11(5), 550–560. https://doi.org/10.1097/00001648-200009000-00011
+
+Rosenbaum, P. R., & Rubin, D. B. (1983). The central role of the propensity score in observational studies for causal effects. Wisconsin Clinical Cancer Center, Biostatistics.
+
+Rosenbaum, P. R. (1987). Model-Based Direct Adjustment. Journal of the American Statistical Association, 82(398), 387–394. https://doi.org/10.1080/01621459.1987.10478441
+
+Rubin, D. B. (1987). Multiple imputation for nonresponse in surveys. Wiley.
+
+Silber, J. H., Rosenbaum, P. R., Clark, A. S., Giantonio, B. J., Ross, R. N., Teng, Y., Wang, M., Niknam, B. A., Ludwig, J. M., Wang, W., Even-Shoshan, O., & Fox, K. R. (2013). Characteristics associated with differences in survival among black and white women with breast cancer. JAMA, 310(4), 389–397. https://doi.org/10.1001/jama.2013.8272
+
+Sonneveld P. (2017). Management of multiple myeloma in the relapsed/refractory patient. Hematology. American Society of Hematology. Education Program, 2017(1), 508–517. https://doi.org/10.1182/asheducation-2017.1.508
+
+Stuart E. A. (2010). Matching methods for causal inference: A review and a look forward. Statistical science : a review journal of the Institute of Mathematical Statistics, 25(1), 1–21. https://doi.org/10.1214/09-STS313
+
+Therneau, T. M., & Grambsch, P. M. (2000). Modeling survival data: Extending the cox model. Springer New York.
+
+van Buuren, S., & Groothuis-Oudshoorn, K. (2006). Mice: Multivariate imputation by chained equations. CRAN: Contributed Packages. https://doi.org/10.32614/cran.package.mice
+
+Vo, J. N., Wu, Y. M., Mishler, J., Hall, S., Mannan, R., Wang, L., Ning, Y., Zhou, J., Hopkins, A. C., Estill, J. C., Chan, W. K. B., Yesil, J., Cao, X., Rao, A., Tsodikov, A., Talpaz, M., Cole, C. E., Ye, J. C., Multiple Myeloma Research Consortium, Bergsagel, P. L., … Chinnaiyan, A. M. (2022). The genetic heterogeneity and drug resistance mechanisms of relapsed refractory multiple myeloma. Nature communications, 13(1), 3750. https://doi.org/10.1038/s41467-022-31430-0
+
+Walker, B., Boyd, M., Aguilar, K., Davies, K., Espirito, J., Frytak, J., & Robert, N. (2021). Comparisons of real-world time-to-event end points in Oncology Research. JCO Clinical Cancer Informatics, (5), 45–46. https://doi.org/10.1200/cci.20.00125
+
+Waxman, A. J., Mink, P. J., Devesa, S. S., Anderson, W. F., Weiss, B. M., Kristinsson, S. Y., McGlynn, K. A., & Landgren, O. (2010). Racial disparities in incidence and outcome in multiple myeloma: a population-based study. Blood, 116(25), 5501–5506. https://doi.org/10.1182/blood-2010-07-298760
+
+White, I. R., & Carlin, J. B. (2010). Bias and efficiency of multiple imputation compared with complete-case analysis for missing covariate values. Statistics in medicine, 29(28), 2920–2931. https://doi.org/10.1002/sim.3944
+
+White, I. R., Royston, P., & Wood, A. M. (2011). Multiple imputation using chained equations: Issues and guidance for practice. Statistics in medicine, 30(4), 377–399. https://doi.org/10.1002/sim.4067
+
+Williams, D. R., Priest, N., & Anderson, N. B. (2016). Understanding associations among race, socioeconomic status, and health: Patterns and prospects. Health psychology : official journal of the Division of Health Psychology, American Psychological Association, 35(4), 407–411. https://doi.org/10.1037/hea0000242
+
+Yang, D., & Dalton, J. E. (2012). A unified approach to measuring the effect size between two groups using SAS®. Proceedings of the SAS Global Forum 2012, Paper 335-2012. SAS Institute.
+
+# Supplementary Material
+
+```{=tex}
+\newpage
+\section*{List of Supplementary Tabless}
+```
+**Supplementary Table 1** SMDs comparing White patients to race/ethnicity groups in the original dataset.
+
+**Supplementary Table 2.1** Sample size and proportions retained across PS methods for White and AA.
+
+**Supplementary Table 2.2** Sample size and proportions retained across PS methods for White and Asian.
+
+**Supplementary Table 2.3** Sample size and proportions retained across PS methods for White and HL.
+
+**Supplementary Table 2.4** Sample size and proportions retained across PS methods for White and Other Races.
+
+```{=tex}
+\newpage
+\section*{List of Supplementary Figures}
+```
+**Supplementary Figure 1.1** Proportion of covariates with SMD $\geq$ 0.1 between White and Asian patients across PS methods.
+
+**Supplementary Figure 1.2** Proportion of covariates with SMD $\geq$ 0.1 between White and AA patients across PS methods.
+
+**Supplementary Figure 1.3** Proportion of covariates with SMD $\geq$ 0.1 between White and HL patients across PS methods.
+
+**Supplementary Figure 1.4** Proportion of covariates with SMD $\geq$ 0.1 between White and Other Races patients across PS methods.
+
+**Supplementary Figure 2.1** HRs & 95% CIs for OS comparing White and AA using complete case and imputed data analyses.
+
+**Supplementary Figure 2.2** HRs & 95% CIs for OS comparing White and Asian using complete case and imputed data analyses.
+
+**Supplementary Figure 2.3** HRs & 95% CIs for OS comparing White and HL using complete case and imputed data analyses.
+
+**Supplementary Figure 2.4** HRs & 95% CIs for OS comparing White and Other Races using complete case and imputed data analyses.
+
+**Supplementary Figure 3.1** HRs & 95% CIs for TTNT comparing White and AA using complete case and imputed data analyses.
+
+**Supplementary Figure 3.2** HRs & 95% CIs for TTNT comparing White and Asian using complete case and imputed data analyses.
+
+**Supplementary Figure 3.3** HRs & 95% CIs for TTNT comparing White and HL using complete case and imputed data analyses.
+
+**Supplementary Figure 3.4** HRs & 95% CIs for TTNT comparing White and Other Races using complete case and imputed data analyses.
+
+{{< pagebreak >}}
+
+## Supplementary Tables
+
+![](table_smd.png) **Supplementary Table 1** SMDs comparing White patients to race/ethnicity groups in the original dataset. \newpage
+
+```{r, echo=FALSE}
+table1 <- readRDS("African American_sample loss.rds") 
+table1
+```
+
+**Supplementary Table 2.1** Sample size and proportions retained across PS methods for White and AA.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r, echo=FALSE}
+table2 <- readRDS("Asian_sample loss.rds") 
+table2 
+```
+
+**Supplementary Table 2.2** Sample size and proportions retained across PS methods for White and Asian.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r, echo=FALSE}
+table3 <- readRDS("Hispanic or Latino_sample loss.rds") 
+table3 
+```
+
+**Supplementary Table 2.3** Sample size and proportions retained across PS methods for White and HL.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r, echo=FALSE}
+table4 <- readRDS("Other Races_sample loss.rds") 
+table4
+```
+
+**Supplementary Table 2.4** Sample size and proportions retained across PS methods for White and Other Races.
+
+\newpage
+
+## Supplementary Figures
+
+### SMDs
+
+![](Asian_combined_panel.png)
+
+**Supplementary Figure 1.1** Proportion of covariates with SMD $\geq$ 0.1 between White and Asian patients across PS methods.
+
+{{< pagebreak >}}
+
+![](African%20American_combined_panel.png) **Supplementary Figure 1.2** Proportion of covariates with SMD $\geq$ 0.1 between White and AA patients across PS methods. {{< pagebreak >}}
+
+![](Hispanic%20or%20Latino_combined_panel.png) **Supplementary Figure 1.3** Proportion of covariates with SMD $\geq$ 0.1 between White and HL patients across PS methods.
+
+{{< pagebreak >}}
+
+![](Other%20Races_combined_panel.png) **Supplementary Figure 1.4** Proportion of covariates with SMD $\geq$ 0.1 between White and Other Races patients across PS methods.
+
+{{< pagebreak >}}
+
+### OS Analysis
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("African American_comparison")
+plot1
+
+```
+
+**Supplementary Figure 2.1** HRs & 95% CIs for OS comparing White and AA using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("Asian_comparison")
+plot1
+```
+
+**Supplementary Figure 2.2** HRs & 95% CIs for OS comparing White and Asian using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+
+plot1 <- readRDS("Hispanic or Latino_comparison")
+plot1
+```
+
+**Supplementary Figure 2.3** HRs & 95% CIs for OS comparing White and HL using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("Other Races_comparison")
+plot1
+```
+
+**Supplementary Figure 2.4** HRs & 95% CIs for OS comparing White and Other Races using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+### TTNT Analysis
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("African American_comparison_ttnt")
+plot1
+```
+
+**Supplementary Figure 3.1** HRs & 95% CIs for TTNT comparing White and AA using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("Asian_comparison_ttnt")
+plot1
+
+```
+
+**Supplementary Figure 3.2** HRs & 95% CIs for TTNT comparing White and Asian using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("Hispanic or Latino_comparison_ttnt")
+plot1
+```
+
+**Supplementary Figure 3.3** HRs & 95% CIs for TTNT comparing White and HL using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("Other Races_comparison_ttnt")
+plot1
+
+```
+
+**Supplementary Figure 3.4** HRs & 95% CIs for TTNT comparing White and Other Races using complete case and imputed data analyses.
+
+## Supplementary Data Information
+
+1.  Race and Ethnicity in Flatiron Health Database
+
+Race and ethnicity information can be recorded in different ways by clinical teams after being reported by a patient. In the typical EHR workflow, clinical teams input race and ethnicity information in a two-question format. This information is often collected from patients via intake interviews and forms, but exact processes can vary greatly between practices. It is important to note that EHR platforms typically do not require documentation of race and ethnicity. There is minimal incentive for clinical teams to record this information, aside from recently established programs such as the Oncology Care Model (OCM) and Merit-based Incentive Payment System (MIPS) which require specific documentation. Although these programs aid in increasing completeness across several demographic fields, including race and ethnicity, a limited number of practices and eligible patients are enrolled. As a result, we continue to see low capture of race and ethnicity information over time.
+
+Flatiron’s race and ethnicity categorizations are modeled after the U.S. Office of Management and Budget (OMB) Standards for Race and Ethnicity, which inform Census categories along with FDA guidelines for collecting race and ethnicity information in clinical trials. However, Flatiron categories deviate slightly from OMB standards due to de-identification protocols and mapping processes:
+
+-   American Indian or Alaska Native is mapped to “Other Race”
+
+-   Native Hawaiian or Other Pacific Islander is mapped to “Other Race”
+
+-   Source data that contains a race description which falls in multiple race categories is mapped to "Other Race"
+
+-   Source data whose race description states that patient declines is represented as NULL values
+
+The de-identification protocols described above inform the final categories present in the *Race* and *Ethnicity* variables within delivered datasets. Flatiron’s Medical Informatics team maps the hundreds of race and ethnicity values from the EHR to the below categories accordingly. It is important to note that Flatiron does not otherwise alter source data.
+
+1.  Definition and Rules of Line of Therapy in Flatiron Health Database
+
+The definition of a line of therapy is generally the first eligible drug episode plus other eligible drugs given within 28 days. The name of the “regimen” for that line of therapy is the combination of therapies in that line, unless otherwise noted .
+
+The index date is defined as the patient’s date of diagnosis with MM, as identified from unstructured data. The start of the first line of therapy is defined as the date of first drug episode of an eligible therapy that is given after or up to 14 days before the index date, and after the start of structured activity (earliest structured visit or therapy). Only an abstracted oral or an abstracted IV or SC therapy can start 1L before the start of structured activity.
+
+![](MM_LOT_Startof1L.png)
+
+Transplants are not eligible to be the start of the first line of therapy. For cases where a transplant appears as the first treatment after the index date and start of structured activity, the transplant is marked as Line Zero, indicating patients for whom therapy data may be missing.
+
+2.  Definition of Socioeconomic Status in Flatiron Health Database
+
+SES is defined as "the relative position of a family or individual on a hierarchical social structure, based on their access to or control over wealth, prestige and power.” In health inequities research, SES is used to reflect the ability of individuals or groups to access the resources necessary to obtain and maintain good health.2 SES is generally conceptualized as an individual's (or group's) income, education, and occupation (or a combination of these characteristics). Several studies have found that lower SES is associated with healthcare barriers and reduced cancer survival. As a result, there is a growing interest in examining how SES contributes to cancer inequities. For example, SES has been demonstrated to mediate the association between race/ethnicity and cancer outcomes. Researchers should also consider whether SES is a potential unmeasured confounder in real-world data studies comparing treatment groups (*e.g.*, in an evaluation of treatment effectiveness, SES may be associated with both the cancer outcome of interest and whether or which treatment is received).
