@@ -1,0 +1,142 @@
+---
+title: "Untitled"
+author: "cohort selection"
+date: "2025-04-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+data <- read.csv("cr_ttnt_data.csv")
+```
+# AA
+```{r}
+# match each race/ethnicity group separately
+cr_tntt_data<- data %>% filter(combined_race_ethnicity %in% c("White", "African American" ))
+cr_tntt_data<- cr_tntt_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+
+# install.packages("cmprsk")
+library(cmprsk)
+
+# Cumulative incidence curve, grouped by race/ethnicity if available
+cif_ttnt <- cuminc(ftime = cr_tntt_data$TTNT_months,
+fstatus = cr_tntt_data$fstatus,
+group = cr_tntt_data$combined_race_ethnicity)
+cif_ttnt
+# Plot
+plot(cif_ttnt, lty = 1, col = 1:3)
+legend("topright", legend = names(cif_ttnt), lty = 1, col = 1:3)
+
+# Assign specific colors
+colors <- c("blue", "red", "blue", "red") # White=blue, Hispanic/Latino=red
+linetypes <- c(1, 1, 2, 2) # Solid for 2L, dashed for death
+
+# Plot all
+plot(cif_ttnt[1:4], lty = linetypes, col = colors, xlab = "Months", ylab = "Cumulative incidence")
+
+# Add manual legend
+legend("topright",
+legend = c("White - Received 2L ", "African American - Received 2L ",
+"White - Death before 2L", "African American - Death before 2L"),
+lty = linetypes, col = colors)
+```
+# Asian
+```{r}
+# match each race/ethnicity group separately
+cr_tntt_data<- data %>% filter(combined_race_ethnicity %in% c("White", "Asian" ))
+cr_tntt_data<- cr_tntt_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+
+# install.packages("cmprsk")
+library(cmprsk)
+
+# Cumulative incidence curve, grouped by race/ethnicity if available
+cif_ttnt <- cuminc(ftime = cr_tntt_data$TTNT_months,
+fstatus = cr_tntt_data$fstatus,
+group = cr_tntt_data$combined_race_ethnicity)
+cif_ttnt
+# Plot
+plot(cif_ttnt, lty = 1, col = 1:3)
+legend("topright", legend = names(cif_ttnt), lty = 1, col = 1:3)
+
+# Assign specific colors
+colors <- c("blue", "red", "blue", "red") # White=blue, Asian=red
+linetypes <- c(1, 1, 2, 2) # Solid for 2L, dashed for death
+
+# Plot all
+plot(cif_ttnt[1:4], lty = linetypes, col = colors, xlab = "Months", ylab = "Cumulative incidence")
+
+# Add manual legend
+legend("topright",
+legend = c("White - Received 2L ", "Asian - Received 2L ",
+"White - Death before 2L", "Asian- Death before 2L"),
+lty = linetypes, col = colors)
+```
+# HL
+```{r}
+# match each race/ethnicity group separately
+cr_tntt_data<- data %>% filter(combined_race_ethnicity %in% c("White", "Hispanic or Latino" ))
+cr_tntt_data<- cr_tntt_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+
+# install.packages("cmprsk")
+library(cmprsk)
+
+# Cumulative incidence curve, grouped by race/ethnicity if available
+cif_ttnt <- cuminc(ftime = cr_tntt_data$TTNT_months,
+fstatus = cr_tntt_data$fstatus,
+group = cr_tntt_data$combined_race_ethnicity)
+cif_ttnt
+# Plot
+plot(cif_ttnt, lty = 1, col = 1:3)
+legend("topright", legend = names(cif_ttnt), lty = 1, col = 1:3)
+
+# Assign specific colors
+colors <- c("blue", "red", "blue", "red") # White=blue, Hispanic/Latino=red
+linetypes <- c(1, 1, 2, 2) # Solid for 2L, dashed for death
+
+# Plot all
+plot(cif_ttnt[1:4], lty = linetypes, col = colors, xlab = "Months", ylab = "Cumulative incidence")
+
+# Add manual legend
+legend("topright",
+legend = c("White - Received 2L ", "Hispanic/Latino - Received 2L ",
+"White - Death before 2L", "Hispanic/Latino - Death before 2L"),
+lty = linetypes, col = colors)
+```
+
+# HL
+```{r}
+# match each race/ethnicity group separately
+cr_tntt_data<- data %>% filter(combined_race_ethnicity %in% c("White", "Other Races" ))
+cr_tntt_data<- cr_tntt_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+
+# install.packages("cmprsk")
+library(cmprsk)
+
+# Cumulative incidence curve, grouped by race/ethnicity if available
+cif_ttnt <- cuminc(ftime = cr_tntt_data$TTNT_months,
+fstatus = cr_tntt_data$fstatus,
+group = cr_tntt_data$combined_race_ethnicity)
+cif_ttnt
+# Plot
+plot(cif_ttnt, lty = 1, col = 1:3)
+legend("topright", legend = names(cif_ttnt), lty = 1, col = 1:3)
+
+# Assign specific colors
+colors <- c("blue", "red", "blue", "red") # White=blue, Other Races=red
+linetypes <- c(1, 1, 2, 2) # Solid for 2L, dashed for death
+
+# Plot all
+plot(cif_ttnt[1:4], lty = linetypes, col = colors, xlab = "Months", ylab = "Cumulative incidence")
+
+# Add manual legend
+legend("topright",
+legend = c("White - Received 2L ", "Other Races - Received 2L ",
+"White - Death before 2L", "Other Races - Death before 2L"),
+lty = linetypes, col = colors)
+```
+
+
+
