@@ -1,0 +1,1876 @@
+---
+title: "AAs-TTNT"
+author: "cohort selection"
+date: "2025-02-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+ttnt_data <-  read.csv("cr_ttnt_data_combined.csv")
+ttnt_data <-  ttnt_data %>% mutate(combined_race_ethnicity = factor(combined_race_ethnicity,
+                                            levels = c("White", 
+                                                       "African American",
+                                                       "Asian",
+                                                       "Hispanic or Latino",
+                                                       "Other Races",
+                                                       "Unknown/Missing")))
+ttnt_data <- ttnt_data %>% select("combined_race_ethnicity", "gender", "age_group", "combined_ecog", "issstage", "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", "hemoglobin","marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy","TTNT_months","fstatus_combined")
+
+vars <- c( "gender", "age_group", "combined_ecog", "issstage", "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", "hemoglobin","marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy")
+
+# Assume new_dat is your data frame
+ttnt_data$combined_ecog <- as.factor(ttnt_data$combined_ecog)
+ttnt_data$combined_ecog <- relevel(ttnt_data$combined_ecog , ref = "0-1" )
+ttnt_data$sesindex2015_2019 <- as.factor(ttnt_data$sesindex2015_2019)
+ttnt_data$hemoglobin <- as.factor(ttnt_data$hemoglobin)
+ttnt_data$marker_calcium_result <- as.factor(ttnt_data$marker_calcium_result)
+ttnt_data$marker_creatinie_result <- as.factor(ttnt_data$marker_creatinie_result)
+# ttnt_data$lightchainkappa <- as.factor(ttnt_data$lightchainkappa)
+# ttnt_data$lightchainlambda <- as.factor(ttnt_data$lightchainlambda)
+ttnt_data$practicetype <- as.factor(ttnt_data$practicetype)
+# ttnt_data$mproteinigg <- as.factor(ttnt_data$mproteinigg)
+
+counts <- ttnt_data %>%
+  group_by(combined_race_ethnicity) %>%
+  summarise(count = n()); counts
+```
+
+```{r}
+#install.packages("mice")
+library(mice)
+# set "Unknown/missing" as NA
+ttnt_data_2 <- ttnt_data # _2 is a back up dataset
+ttnt_data_2$combined_race_ethnicity[ttnt_data_2$combined_race_ethnicity == "Unknown/Missing"] <- NA
+
+# set anemia, renal deficiency, .. as factors
+ttnt_data_2$hemoglobin <- as.factor(ttnt_data_2$hemoglobin)
+ttnt_data_2$marker_calcium_result <- as.factor(ttnt_data_2$marker_calcium_result)
+ttnt_data_2$marker_creatinie_result <- as.factor(ttnt_data_2$marker_creatinie_result)
+
+# only include covariates of interest
+ttnt_data_2 <- ttnt_data_2 %>%select("combined_race_ethnicity", "gender", "age_group", "combined_ecog", "issstage", "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", "hemoglobin","marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy","TTNT_months","fstatus_combined")
+
+# data imputation
+# 22 imputated datasets, random seed set into "123"
+imputated_data <- mice(ttnt_data_2,method =c("polyreg"), m =22, seed =12)
+imputed_list <- complete(imputated_data, action = "all",include =TRUE)
+races_to_keep <- c("White", "Other Races" )
+filtered_imputed_list <- lapply(imputed_list, function(df){
+  df_filtered <- df[df$combined_race_ethnicity %in% races_to_keep,]
+  df_filtered <- df_filtered %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+  return(df_filtered)
+})
+
+# To view 
+filtered_imputed_list[[2]]
+
+library(dplyr) # Function to count White and Other Races patients 
+count_race <- function(df) { df %>% filter(combined_race_ethnicity %in% c("White", "Other Races")) %>% count(combined_race_ethnicity) %>% mutate(dataset = deparse(substitute(df))) } 
+# Apply the function to each imputed dataset and combine the results 
+race_counts <- lapply(imputed_list, count_race) # Convert list to a single data frame
+race_counts_df <- bind_rows(race_counts, .id = "dataset") # Print the results 
+print(race_counts_df)
+
+# get sample sizes
+sample_sizes <- sapply(filtered_imputed_list, nrow)
+print(sample_sizes)
+```
+# TTNT
+# Crude 
+```{r}
+library(broom)
+# Assuming you have multiple imputed datasets in a list called `imputed_list` 
+num_imputations <- length(filtered_imputed_list) 
+# Create placeholders to store coefficients and standard errors 
+coef_list <- list() 
+se_list <- list() 
+# Fit Cox model on each imputed dataset 
+for (i in 1:num_imputations) { 
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined) ~ as.factor(treatment), data = filtered_imputed_list[[i]]) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+} 
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+crude_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI )
+print(crude_results)
+
+```
+# Covariate Adjustment
+```{r}
+# Assuming you have multiple imputed datasets in a list called `imputed_list` 
+num_imputations <- length(filtered_imputed_list) 
+# Create placeholders to store coefficients and standard errors 
+coef_list <- list() 
+se_list <- list() 
+# Fit Cox model on each imputed dataset 
+for (i in 1:num_imputations) { 
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined) ~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy, data = filtered_imputed_list[[i]]) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+  } 
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+cov_adj_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI )
+print(cov_adj_results)
+```
+
+# Nerest Neighbor Matching - With Caliper = 0.2
+```{r}
+library(MatchIt)
+# # Without Interaction Terms 
+# match.list <- lapply(1:22, function(i) {
+# MatchIt::matchit(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy,
+#                filtered_imputed_list[[i]],
+#               method = "nearest",
+#                caliper = 0.1, 
+#                distance = "glm") # method of estimating propensity scores
+# })
+# 
+# # Interaction Terms Added
+# match.list <- lapply(1:22, function(i) {
+# MatchIt::matchit(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy+ 
+#           sesindex2015_2019:year_diag_group +
+#           sesindex2015_2019:issstage + 
+#           sesindex2015_2019:practicetype +
+#           year_diag_group:age_group +
+#           year_diag_group:issstage + 
+#           year_diag_group:hemoglobin + 
+#           year_diag_group:practicetype +
+#           age_group:issstage + 
+#           age_group:hemoglobin +
+#           age_group:practicetype+
+#           issstage:hemoglobin + 
+#           issstage:practicetype + 
+#           practicetype:hemoglobin,
+#                filtered_imputed_list[[i]],
+#               method = "nearest",
+#                caliper = 0.1, 
+#                distance = "glm") # method of estimating propensity scores
+# })
+
+library(tableone)
+
+# create a vector of covariates 
+vars <- c( "gender", "age_group", "combined_ecog", "issstage", "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", "hemoglobin","marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy")
+
+
+# # obtain each imputed dataset
+# match.data <- lapply(1:22, function(i) {
+#  ps_model <- matchit(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy,
+#                filtered_imputed_list[[i]],
+#                method = "nearest",
+#                caliper = 0.1, 
+#                distance = "glm")
+#  match.data <- match.data(ps_model)
+#  return(match.data)
+# })
+# 
+# # matched SMD
+# ## For loop to create and print Table 1 for matched data 
+# for (i in 1:22) { 
+#   # Generate Table 1 for the i-th imputed dataset 
+#   table_matched <- CreateTableOne( vars = vars, strata = "treatment", data =match.data[[i]], test = FALSE, addOverall = TRUE, smd = TRUE) 
+#   # Print the iteration number and the Table 1 
+#   print(paste("Table 1 for Imputed Dataset:", i)) 
+#   print(table_matched, smd = TRUE) # Add SMD if needed 
+#   }
+# # obtain each imputed dataset (interaction terms)
+# match.data <- lapply(1:22, function(i) {
+#  ps_model <- matchit(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy+ 
+#           sesindex2015_2019:year_diag_group +
+#           sesindex2015_2019:issstage + 
+#           sesindex2015_2019:practicetype +
+#           year_diag_group:age_group +
+#           year_diag_group:issstage + 
+#           year_diag_group:hemoglobin + 
+#           year_diag_group:practicetype +
+#           age_group:issstage + 
+#           age_group:hemoglobin +
+#           age_group:practicetype+
+#           issstage:hemoglobin + 
+#           issstage:practicetype + 
+#           practicetype:hemoglobin,
+#                filtered_imputed_list[[i]],
+#                method = "nearest",
+#                caliper = 0.1, 
+#                distance = "glm")
+#  match.data <- match.data(ps_model)
+#  return(match.data)
+# })
+# 
+# library(tableone)
+# # matched SMD
+# ## For loop to create and print Table 1 for matched data 
+# for (i in 1:22) { 
+#   # Generate Table 1 for the i-th imputed dataset 
+#   table_matched <- CreateTableOne( vars = vars, strata = "treatment", data =match.data[[i]], test = FALSE, addOverall = TRUE, smd = TRUE) 
+#   # Print the iteration number and the Table 1 
+#   print(paste("Table 1 for Imputed Dataset:", i)) 
+#   print(table_matched, smd = TRUE) # Add SMD if needed 
+#   }
+
+```
+
+```{r}
+# # Checking associations between catgeroical variables
+# # A function to help 
+# perform_chi_squared_tests <- function(data, categorical_vars, alpha = 0.05) { 
+#   # Create an empty list to store results 
+#   results <- list() 
+#   # Get all unique pairs of categorical variables 
+#   pairs <- combn(categorical_vars, 2, simplify = FALSE) 
+#   
+#   # Perform Chi-squared tests for each pair 
+#   for (pair in pairs) { 
+#     var1 <- pair[1] 
+#     var2 <- pair[2] 
+#   # Perform Chi-squared test 
+#   chi_sq_result <- chisq.test(data[[var1]], data[[var2]]) 
+#   # Determine significance 
+#   significant <- ifelse(chi_sq_result$p.value < alpha, "Yes", "No") 
+#   # Save results in the list 
+#   results[[paste(var1, "vs", var2, sep = " ")]] <- list( "Variable1" = var1, "Variable2" = var2, "Chi-sq Statistic" = chi_sq_result$statistic, "p-value" = chi_sq_result$p.value, "Degrees of Freedom" = chi_sq_result$parameter, "Significant" = significant ) } 
+#   # Convert results to a data frame for easier viewing 
+#   results_df <- do.call(rbind, lapply(results, as.data.frame)) 
+#   # Filter for significant results 
+#   significant_results <- results_df[results_df$Significant == "Yes", ] 
+#   # Return both the full results and the significant results 
+#   return(list( "All Results" = results_df, "Significant Results" = significant_results )) }
+# 
+# 
+# categorical_vars <- c("sesindex2015_2019", "year_diag_group", "issstage", "practicetype", "combined_ecog","gender")
+# 
+# chi_sq_results <- perform_chi_squared_tests(dat_try, categorical_vars, alpha = 0.05)
+```
+
+```{r}
+imputation_results <- list()
+coef_list <- list()
+se_list <- list()
+for (i in 1:22) { 
+  # Access the i-th imputed dataset 
+ imputed_subset <- filtered_imputed_list[[i]]
+ # Perform propensity score stratification or matching 
+  ps_strata <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               filtered_imputed_list[[i]],
+              method = "nearest",
+                    caliper = 0.2, 
+               distance = "glm")
+  # summary(ps_strata, subclass = TRUE)
+  match.data <- match.data(ps_strata)
+  
+  table1 <- CreateTableOne(vars = vars, strata = "treatment", data = match.data, test = FALSE, smd = TRUE)
+    
+  smd_values <- data.frame(
+      Variable = vars,
+      SMD = ExtractSmd(table1),
+      Imputation = i,
+      stringsAsFactors = FALSE)
+    
+  imputation_results[[i]] <- smd_values
+  
+  # HR estimates
+   cox_model <- coxph(Surv(TTNT_months, fstatus_combined) ~ as.factor(treatment), data =  match.data) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+}
+
+all_smds <- do.call(rbind, imputation_results)
+
+# generating proprotions 
+library(dplyr)
+proportions_by_variable <- all_smds %>%
+  group_by(Variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+
+# visualization
+ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+                                               y =proportion_exceeding_0.1)) +
+  geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+                                                         x = "Covariate",
+                                                         y = "Proportions Exceeding 0.1") +
+  theme_minimal() + coord_flip()
+
+# average SMDs across imputations
+smd_avg_nn0.1_1<- all_smds%>% group_by(Variable) %>%
+  summarise(Mean_SMD = round(mean(X1.vs.2),3)
+            ) %>% arrange(desc(abs(Mean_SMD)))
+print(smd_avg_nn0.1_1)
+
+all_smds_2 <- all_smds %>% left_join(smd_avg_nn0.1_1, by = "Variable")
+all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+
+#overall
+ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+
+# HR estimates
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+nn_0.1_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI )
+print(nn_0.1_results)
+
+########################################################################################################################
+# imputation_results <- list()
+# for (i in 1:22) { 
+#   # Access the i-th imputed dataset 
+#  imputed_subset <- filtered_imputed_list[[i]]
+#  # Perform propensity score stratification or matching 
+#   ps_strata <- matchit(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy+ 
+#                  sesindex2015_2019:gender,
+#                filtered_imputed_list[[i]],
+#               method = "nearest",
+#                     caliper = 0.1, 
+#                distance = "glm")
+#   # summary(ps_strata, subclass = TRUE)
+#   match.data <- match.data(ps_strata)
+#   
+#   table1 <- CreateTableOne(vars = vars, strata = "treatment", data = match.data, test = FALSE, smd = TRUE)
+#     
+#   smd_values <- data.frame(
+#       Variable = vars,
+#       SMD = ExtractSmd(table1),
+#       Imputation = i,
+#       stringsAsFactors = FALSE)
+#     
+#   imputation_results[[i]] <- smd_values
+# }
+# 
+# all_smds <- do.call(rbind, imputation_results)
+# 
+# # generating proprotions 
+# library(dplyr)
+# proportions_by_variable <- all_smds %>%
+#   group_by(Variable) %>%
+#   summarise(
+#     proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+#   )
+# 
+# print(proportions_by_variable)
+# 
+# # visualization
+# ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+#                                                y =proportion_exceeding_0.1)) +
+#   geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+#                                                          x = "Covariate",
+#                                                          y = "Proportions Exceeding 0.1") +
+#   theme_minimal() + coord_flip()
+# 
+# # average SMDs across imputations
+# smd_avg_nn0.1<- all_smds%>% group_by(Variable) %>%
+#   summarise(Mean_SMD = round(mean(X1.vs.2),3)
+#             ) %>% arrange(desc(abs(Mean_SMD)))
+# print(smd_avg_nn0.1)
+# 
+# all_smds_2 <- all_smds %>% left_join(smd_avg_nn0.1, by = "Variable")
+# all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+# 
+# #overall
+# ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+#   geom_point(alpha=0.5, size =2) +
+#   geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+#   geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+``` 
+
+# Nerest Neighbor Matching - Without Caliper
+```{r}
+# #Matching the multiply imputed datasets manually
+# match.list <- lapply(1:22, function(i) {
+# MatchIt::matchit(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy+sesindex2015_2019:year_diag_group +
+#           sesindex2015_2019:issstage + 
+#           sesindex2015_2019:practicetype +
+#           year_diag_group:age_group +
+#           year_diag_group:issstage + 
+#           year_diag_group:hemoglobin + 
+#           year_diag_group:practicetype +
+#           age_group:issstage + 
+#           age_group:hemoglobin +
+#           age_group:practicetype+
+#           issstage:hemoglobin + 
+#           issstage:practicetype + 
+#           practicetype:hemoglobin,
+#                filtered_imputed_list[[i]],
+#               method = "nearest",
+#                distance = "glm") # method of estimating propensity scores
+# })
+
+# create a vector of covariates 
+vars <- c( "gender", "age_group", "combined_ecog", "issstage", "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", "hemoglobin","marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy")
+
+# # obtain each imputed dataset (interaction terms)
+# match.data <- lapply(1:22, function(i) {
+#  ps_model <- matchit(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy+sesindex2015_2019:year_diag_group +
+#           sesindex2015_2019:issstage + 
+#           sesindex2015_2019:practicetype +
+#           year_diag_group:age_group +
+#           year_diag_group:issstage + 
+#           year_diag_group:hemoglobin + 
+#           year_diag_group:practicetype +
+#           age_group:issstage + 
+#           age_group:hemoglobin +
+#           age_group:practicetype+
+#           issstage:hemoglobin + 
+#           issstage:practicetype + 
+#           practicetype:hemoglobin,
+#                filtered_imputed_list[[i]],
+#                method = "nearest",
+#                distance = "glm")
+#  match.data <- match.data(ps_model)
+#  return(match.data)
+# })
+# 
+# # matched SMD
+# ## For loop to create and print Table 1 for matched data 
+# for (i in 1:22) { 
+#   # Generate Table 1 for the i-th imputed dataset 
+#   table_matched <- CreateTableOne( vars = vars, strata = "treatment", data =match.data[[i]], test = FALSE, addOverall = TRUE, smd = TRUE) 
+#   # Print the iteration number and the Table 1 
+#   print(paste("Table 1 for Imputed Dataset:", i)) 
+#   print(table_matched, smd = TRUE) # Add SMD if needed 
+#   }
+
+```
+
+```{r}
+imputation_results <- list()
+coef_list <- list()
+se_list <- list()
+for (i in 1:22) { 
+  # Access the i-th imputed dataset 
+ imputed_subset <- filtered_imputed_list[[i]]
+ # Perform propensity score stratification or matching 
+  ps_strata <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               filtered_imputed_list[[i]],
+              method = "nearest",
+               distance = "glm")
+  # summary(ps_strata, subclass = TRUE)
+  match.data <- match.data(ps_strata)
+  
+  table1 <- CreateTableOne(vars = vars, strata = "treatment", data = match.data, test = FALSE, smd = TRUE)
+    
+  smd_values <- data.frame(
+      Variable = vars,
+      SMD = ExtractSmd(table1),
+      Imputation = i,
+      stringsAsFactors = FALSE)
+    
+  imputation_results[[i]] <- smd_values
+  
+  # HR estimates
+   cox_model <- coxph(Surv(TTNT_months, fstatus_combined) ~ as.factor(treatment), data =  match.data) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+}
+
+all_smds <- do.call(rbind, imputation_results)
+
+# generating proprotions 
+library(dplyr)
+proportions_by_variable <- all_smds %>%
+  group_by(Variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+
+# visualization
+ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+                                               y =proportion_exceeding_0.1)) +
+  geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+                                                         x = "Covariate",
+                                                         y = "Proportions Exceeding 0.1") +
+  theme_minimal() + coord_flip()
+
+# average SMDs across imputations
+smd_avg_nn0.1_1<- all_smds%>% group_by(Variable) %>%
+  summarise(Mean_SMD = round(mean(X1.vs.2),3)
+            ) %>% arrange(desc(abs(Mean_SMD)))
+print(smd_avg_nn0.1_1)
+
+all_smds_2 <- all_smds %>% left_join(smd_avg_nn0.1_1, by = "Variable")
+all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+
+#overall
+ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+
+# HR estimates
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+nn_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI )
+print(nn_results)
+
+##################################################################################################################
+# # With Interaction Terms 
+# imputation_results <- list()
+# for (i in 1:22) { 
+#   # Access the i-th imputed dataset 
+#  imputed_subset <- filtered_imputed_list[[i]]
+#  # Perform propensity score stratification or matching 
+#   ps_strata <- matchit(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy + sesindex2015_2019:gender,
+#                filtered_imputed_list[[i]],
+#               method = "nearest",
+#                distance = "glm")
+#   # summary(ps_strata, subclass = TRUE)
+#   match.data <- match.data(ps_strata)
+# 
+#     table1 <- CreateTableOne(vars = vars, strata = "treatment", data = match.data, test = FALSE, smd = TRUE)
+#     
+#     smd_values <- data.frame(
+#       Variable = vars,
+#       SMD = ExtractSmd(table1),
+#       Imputation = i,
+#       stringsAsFactors = FALSE)
+#     
+#   imputation_results[[i]] <- smd_values
+# }
+# all_smds <- do.call(rbind, imputation_results)
+# 
+# # generating proprotions 
+# library(dplyr)
+# proportions_by_variable <- all_smds %>%
+#   group_by(Variable) %>%
+#   summarise(
+#     proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+#   )
+# 
+# print(proportions_by_variable)
+# 
+# # visualization
+# ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+#                                                y =proportion_exceeding_0.1)) +
+#   geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+#                                                          x = "Covariate",
+#                                                          y = "Proportions Exceeding 0.1") +
+#   theme_minimal() + coord_flip()
+# 
+# # average SMDs across imputations
+#  tabMatched_caliper <- all_smds%>% group_by(Variable) %>%
+#   summarise(Mean_SMD = round(mean(X1.vs.2),3)
+#             ) %>% arrange(desc(abs(Mean_SMD)))
+# print( tabMatched_caliper)
+# 
+# all_smds_2 <- all_smds %>% left_join( tabMatched_caliper, by = "Variable")
+# all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+# 
+# #overall
+# ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+#   geom_point(alpha=0.5, size =2) +
+#   geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+#   geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+``` 
+
+# Optimal Matching 
+```{r}
+# create a vector of covariates 
+vars <- c( "gender", "age_group", "combined_ecog", "issstage", "asct", "risk_group",
+          "sesindex2015_2019","year_diag_group", "hemoglobin","marker_calcium_result",
+          "marker_creatinie_result","practicetype",
+         "Deletion.13q", "Ploidy")
+
+# # obtain each imputed dataset
+# match.data <- lapply(1:22, function(i) {
+# ps_model <- matchit(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy+sesindex2015_2019:year_diag_group +
+#           sesindex2015_2019:issstage + 
+#           sesindex2015_2019:practicetype +
+#           year_diag_group:age_group +
+#           year_diag_group:issstage + 
+#           year_diag_group:hemoglobin + 
+#           year_diag_group:practicetype +
+#           age_group:issstage + 
+#           age_group:hemoglobin +
+#           age_group:practicetype+
+#           issstage:hemoglobin + 
+#           issstage:practicetype + 
+#           practicetype:hemoglobin,
+#                filtered_imputed_list[[i]],
+#                method = "optimal",
+#                distance = "glm")
+#  match.data <- match.data(ps_model)
+#  return(match.data)
+# })
+# 
+# # matched SMD
+# ## For loop to create and print Table 1 for matched data 
+# for (i in 1:22) { 
+#   # Generate Table 1 for the i-th imputed dataset 
+#   table_matched <- CreateTableOne( vars = vars, strata = "treatment", data =match.data[[i]], test = FALSE, addOverall = TRUE, smd = TRUE) 
+#   # Print the iteration number and the Table 1 
+#   print(paste("Table 1 for Imputed Dataset:", i)) 
+#   print(table_matched, smd = TRUE) # Add SMD if needed 
+#   }
+
+```
+
+```{r}
+imputation_results <- list()
+coef_list <- list()
+se_list <- list()
+for (i in 1:22) { 
+  # Access the i-th imputed dataset 
+ imputed_subset <- filtered_imputed_list[[i]]
+ # Perform propensity score stratification or matching 
+  ps_strata <- matchit(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+               filtered_imputed_list[[i]],
+              method = "optimal",
+               distance = "glm")
+  # summary(ps_strata, subclass = TRUE)
+  match.data <- match.data(ps_strata)
+  
+  table1 <- CreateTableOne(vars = vars, strata = "treatment", data = match.data, test = FALSE, smd = TRUE)
+    
+  smd_values <- data.frame(
+      Variable = vars,
+      SMD = ExtractSmd(table1),
+      Imputation = i,
+      stringsAsFactors = FALSE)
+    
+  imputation_results[[i]] <- smd_values
+  
+  # HR estimates
+   cox_model <- coxph(Surv(TTNT_months, fstatus_combined) ~ as.factor(treatment), data =  match.data) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+}
+
+all_smds <- do.call(rbind, imputation_results)
+
+# generating proprotions 
+library(dplyr)
+proportions_by_variable <- all_smds %>%
+  group_by(Variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+
+# visualization
+ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+                                               y =proportion_exceeding_0.1)) +
+  geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+                                                         x = "Covariate",
+                                                         y = "Proportions Exceeding 0.1") +
+  theme_minimal() + coord_flip()
+
+# average SMDs across imputations
+smd_avg_nn0.1_1<- all_smds%>% group_by(Variable) %>%
+  summarise(Mean_SMD = round(mean(X1.vs.2),3)
+            ) %>% arrange(desc(abs(Mean_SMD)))
+print(smd_avg_nn0.1_1)
+
+all_smds_2 <- all_smds %>% left_join(smd_avg_nn0.1_1, by = "Variable")
+all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+
+#overall
+ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+
+# HR estimates
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+optimal_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI )
+print(optimal_results)
+
+#################################################################################################################
+# imputation_results <- list()
+# for (i in 1:22) { 
+#   # Access the i-th imputed dataset 
+#  imputed_subset <- filtered_imputed_list[[i]]
+#  # Perform propensity score stratification or matching 
+#   ps_strata <- matchit(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy
+#                + sesindex2015_2019:year_diag_group+
+#           sesindex2015_2019:issstage + 
+#           sesindex2015_2019:practicetype +
+#           sesindex2015_2019:combined_ecog +
+#             year_diag_group:issstage +
+#             year_diag_group:practicetype +
+#             year_diag_group:combined_ecog +
+#             issstage:practicetype +
+#             issstage:combined_ecog + 
+#             practicetype:combined_ecog,
+#                imputed_subset,
+#                method = "optimal",
+#                distance = "glm")
+#   # summary(ps_strata, subclass = TRUE)
+#   match.data <- match.data(ps_strata)
+# 
+#     table1 <- CreateTableOne(vars = vars, strata = "treatment", data =  match.data, test = FALSE, smd = TRUE)
+#     
+#     smd_values <- data.frame(
+#       Variable = vars,
+#       SMD = ExtractSmd(table1),
+#       Imputation = i,
+#       stringsAsFactors = FALSE)
+#     
+#   imputation_results[[i]] <- smd_values
+# }
+# all_smds <- do.call(rbind, imputation_results)
+# 
+# # generating proprotions 
+# library(dplyr)
+# proportions_by_variable <- all_smds %>%
+#   group_by(Variable) %>%
+#   summarise(
+#     proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+#   )
+# 
+# print(proportions_by_variable)
+# 
+# # visualization
+# ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+#                                                y =proportion_exceeding_0.1)) +
+#   geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+#                                                          x = "Covariate",
+#                                                          y = "Proportions Exceeding 0.1") +
+#   theme_minimal() + coord_flip()
+# 
+# # average SMDs across imputations
+# tabMatched_optimal <- all_smds%>% group_by(Variable) %>%
+#   summarise(Mean_SMD = round(mean(X1.vs.2),3)
+#             ) %>% arrange(desc(abs(Mean_SMD)))
+# print(tabMatched_optimal)
+# 
+# all_smds_2 <- all_smds %>% left_join(tabMatched_optimal, by = "Variable")
+# all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+# 
+# #overall
+# ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+#   geom_point(alpha=0.5, size =2) +
+#   geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+#   geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+``` 
+
+
+#IPTW (without trimming) - for SMD calculations as it is the same as stabilized iptw
+```{r}
+# library(survey)
+# imputation_results <- list()
+# for (i in 1:22) { 
+#   # Access the i-th imputed dataset 
+#  dat <- filtered_imputed_list[[i]]
+# dat$gender <- as.factor(dat$gender)
+# dat$treatment<- as.factor(dat$treatment)
+# ps_model <- glm(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy,
+#               dat, family = binomial())
+# 
+# dat$pscore <- predict(ps_model, type="response")
+# dat$ps_weights <- ifelse(dat$treatment == 1, 1/dat$pscore, 1/(1-dat$pscore))
+# design <- svydesign(ids = ~1, data =dat, weights = ~ps_weights)
+# 
+#     table1 <- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+#     
+#     smd_values <- data.frame(
+#       Variable = vars,
+#       SMD = ExtractSmd(table1),
+#       Imputation = i,
+#       stringsAsFactors = FALSE)
+#     
+#     print(summary(dat$ps_weights))
+#     plot(dat$ps_weights)
+#   imputation_results[[i]] <- smd_values
+# }
+# all_smds <- do.call(rbind, imputation_results)
+# 
+# # generating proprotions 
+# library(dplyr)
+# proportions_by_variable <- all_smds %>%
+#   group_by(Variable) %>%
+#   summarise(
+#     proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+#   )
+# 
+# print(proportions_by_variable)
+# 
+# # visualization
+# ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+#                                                y =proportion_exceeding_0.1)) +
+#   geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+#                                                          x = "Covariate",
+#                                                          y = "Proportions Exceeding 0.1") +
+#   theme_minimal() + coord_flip()
+# 
+# # average SMDs across imputations
+# smd_avg_iptw_1 <- all_smds%>% group_by(Variable) %>%
+#   summarise(Mean_SMD = round(mean(X1.vs.2),3)
+#             ) %>% arrange(desc(abs(Mean_SMD)))
+# print(smd_avg_iptw_1)
+# 
+# all_smds_2 <- all_smds %>% left_join(smd_avg_iptw_1, by = "Variable")
+# all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+# 
+# #overall
+# ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+#   geom_point(alpha=0.5, size =2) +
+#   geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+#   geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+################################################################################################################
+# imputation_results <- list()
+# for (i in 1:22) { 
+#   # Access the i-th imputed dataset 
+#  dat <- filtered_imputed_list[[i]]
+# dat$gender <- as.factor(dat$gender)
+# dat$treatment<- as.factor(dat$treatment)
+# ps_model <- glm(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy + 
+#                  sesindex2015_2019:gender,
+#               dat, family = binomial())
+# # wt<-WeightIt::weightit(treatment ~ age_group+
+# #                gender + issstage + asct + combined_ecog+
+# #                  risk_group + sesindex2015_2019 +
+# #                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+# #                + practicetype + Deletion.13q + Ploidy,
+# #               dat,
+# #               stabilize = TRUE,
+# #               method = "ps")
+# # dat$ps_weights <- wt$weights
+# dat$pscore <- predict(ps_model, type="response")
+# dat$ps_weights <- ifelse(dat$treatment == 1, 1/dat$pscore, 1/(1-dat$pscore))
+# design <- svydesign(ids = ~1, data =dat, weights = ~ps_weights)
+# 
+#     table1 <- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+#     
+#     smd_values <- data.frame(
+#       Variable = vars,
+#       SMD = ExtractSmd(table1),
+#       Imputation = i,
+#       stringsAsFactors = FALSE)
+#     
+#     print(summary(dat$ps_weights))
+#     plot(dat$ps_weights)
+#   imputation_results[[i]] <- smd_values
+# }
+# all_smds <- do.call(rbind, imputation_results)
+# 
+# # generating proprotions 
+# library(dplyr)
+# proportions_by_variable <- all_smds %>%
+#   group_by(Variable) %>%
+#   summarise(
+#     proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+#   )
+# 
+# print(proportions_by_variable)
+# 
+# # visualization
+# ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+#                                                y =proportion_exceeding_0.1)) +
+#   geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+#                                                          x = "Covariate",
+#                                                          y = "Proportions Exceeding 0.1") +
+#   theme_minimal() + coord_flip()
+# 
+# # average SMDs across imputations
+# smd_avg_iptw <- all_smds%>% group_by(Variable) %>%
+#   summarise(Mean_SMD = round(mean(X1.vs.2),3)
+#             ) %>% arrange(desc(abs(Mean_SMD)))
+# print(smd_avg_iptw)
+# 
+# all_smds_2 <- all_smds %>% left_join(smd_avg_iptw, by = "Variable")
+# all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+# 
+# #overall
+# ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+#   geom_point(alpha=0.5, size =2) +
+#   geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+#   geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+```
+
+#IPTW (with trimming)
+
+```{r}
+imputation_results <- list()
+coef_list <- list()
+se_list <- list()
+for (i in 1:22) { 
+  dat <- filtered_imputed_list[[i]]
+  dat$gender <- as.factor(dat$gender)
+  dat$treatment<- as.factor(dat$treatment)
+  ps_model <- glm(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+              dat, family = binomial())
+  dat$pscore <- predict(ps_model, type="response")
+  dat$ps_weights_2 <- ifelse(dat$treatment == 1, 1/dat$pscore, 1/(1-dat$pscore))
+
+  # apply trimming to weights
+  lower_threshold <- quantile(dat$ps_weights_2 ,0.01)
+  upper_threshold <- quantile(dat$ps_weights_2 ,0.99)
+  aa_data_trimmed <- dat %>% filter(ps_weights_2  >=lower_threshold & 
+                                        ps_weights_2  <= upper_threshold)
+  design <- svydesign(ids = ~1, data =aa_data_trimmed , weights = ~ps_weights_2 )
+
+  table1 <- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+    
+  smd_values <- data.frame(
+      Variable = vars,
+      SMD = ExtractSmd(table1),
+      Imputation = i,
+      stringsAsFactors = FALSE)
+    
+  imputation_results[[i]] <- smd_values
+  
+  # HR estimates
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined) ~ as.factor(treatment), data =aa_data_trimmed, weights = ps_weights_2) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+}
+
+all_smds <- do.call(rbind, imputation_results)
+
+# generating proprotions 
+library(dplyr)
+proportions_by_variable <- all_smds %>%
+  group_by(Variable) %>%
+  summarise(
+    proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+  )
+
+print(proportions_by_variable)
+
+# visualization
+ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+                                               y =proportion_exceeding_0.1)) +
+  geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+                                                         x = "Covariate",
+                                                         y = "Proportions Exceeding 0.1") +
+  theme_minimal() + coord_flip()
+
+# average SMDs across imputations
+iptw_trimmed_1 <- all_smds%>% group_by(Variable) %>%
+  summarise(Mean_SMD = round(mean(X1.vs.2),3)
+            ) %>% arrange(desc(abs(Mean_SMD)))
+print(iptw_trimmed_1)
+
+all_smds_2 <- all_smds %>% left_join(iptw_trimmed_1, by = "Variable")
+all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+
+#overall
+ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+  geom_point(alpha=0.5, size =2) +
+  geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+  geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+
+# HR estimates
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+iptw_trimming_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI )
+print(iptw_trimming_results)
+
+#################################################################################################################
+# imputation_results <- list()
+# for (i in 1:22) { 
+# dat <- filtered_imputed_list[[i]]
+# dat$gender <- as.factor(dat$gender)
+# dat$treatment<- as.factor(dat$treatment)
+# ps_model <- glm(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy +
+#                  sesindex2015_2019:gender,
+#               dat, family = binomial())
+# # wt<-WeightIt::weightit(treatment ~ age_group+
+# #                gender + issstage + asct + combined_ecog+
+# #                  risk_group + sesindex2015_2019 +
+# #                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+# #                + practicetype + Deletion.13q + Ploidy,
+# #               dat,
+# #               stabilize = TRUE,
+# #               method = "ps")
+# # dat$ps_weights <- wt$weights
+# dat$pscore <- predict(ps_model, type="response")
+# dat$ps_weights_2 <- ifelse(dat$treatment == 1, 1/dat$pscore, 1/(1-dat$pscore))
+# 
+# # apply trimming to weights
+# lower_threshold <- quantile(dat$ps_weights_2 ,0.01)
+# upper_threshold <- quantile(dat$ps_weights_2 ,0.99)
+# aa_data_trimmed <- dat %>% filter(ps_weights_2  >=lower_threshold & 
+#                                         ps_weights_2  <= upper_threshold)
+# design <- svydesign(ids = ~1, data =aa_data_trimmed , weights = ~ps_weights_2 )
+# 
+#     table1 <- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+#     
+#     smd_values <- data.frame(
+#       Variable = vars,
+#       SMD = ExtractSmd(table1),
+#       Imputation = i,
+#       stringsAsFactors = FALSE)
+#     
+#   imputation_results[[i]] <- smd_values
+# }
+# all_smds <- do.call(rbind, imputation_results)
+# 
+# # generating proprotions 
+# library(dplyr)
+# proportions_by_variable <- all_smds %>%
+#   group_by(Variable) %>%
+#   summarise(
+#     proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+#   )
+# 
+# print(proportions_by_variable)
+# 
+# # visualization
+# ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+#                                                y =proportion_exceeding_0.1)) +
+#   geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+#                                                          x = "Covariate",
+#                                                          y = "Proportions Exceeding 0.1") +
+#   theme_minimal() + coord_flip()
+# 
+# # average SMDs across imputations
+# iptw_trimmed <- all_smds%>% group_by(Variable) %>%
+#   summarise(Mean_SMD = round(mean(X1.vs.2),3)
+#             ) %>% arrange(desc(abs(Mean_SMD)))
+# print(iptw_trimmed)
+# 
+# all_smds_2 <- all_smds %>% left_join(iptw_trimmed, by = "Variable")
+# all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+# 
+# #overall
+# ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+#   geom_point(alpha=0.5, size =2) +
+#   geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+#   geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+
+```
+
+#IPTW (stablized)
+```{r}
+imputation_results <- list()
+coef_list <- list()
+se_list <- list()
+for (i in 1:22) { 
+  # Access the i-th imputed dataset 
+ imputed_subset <- filtered_imputed_list[[i]]
+ # Perform propensity score stratification or matching 
+ ps_model <- glm(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+              imputed_subset, family = binomial())
+ imputed_subset$pscore <- predict(ps_model, type="response")
+ p_exposure <- mean(imputed_subset$treatment==1)
+ p_non_exposure <- 1-p_exposure
+
+ imputed_subset$ps_weights_3 <- ifelse(imputed_subset$treatment == 1, 
+                           p_exposure/imputed_subset$pscore, 
+                           p_non_exposure/(1-imputed_subset$pscore))
+  # HR estimates
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined) ~ as.factor(treatment), data =  imputed_subset, weights = ps_weights_3) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+}
+
+
+
+# library(survey)
+# dat <- filtered_imputed_list[[1]]
+# dat$gender <- as.factor(dat$gender)
+# dat$treatment<- as.factor(dat$treatment)
+# ps_model <- glm(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy,
+#               dat, family = binomial())
+
+# design <- svydesign(ids = ~1, data =dat, weights = ~ps_weights_3)
+# table_sw<- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+# print(table_sw,smd=TRUE)
+# 
+# cox_model_trimmed_2<- coxph(Surv(TTNT_months, fstatus_combined) ~ as.factor(treatment), data = dat, weights = ps_weights_3)
+# summary(cox_model_trimmed_2)
+
+# HR estimates
+
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+stablized_iptw_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI )
+print(stablized_iptw_results)
+
+```
+
+# PS as an Additional Covariate
+```{r}
+# Assuming you have multiple imputed datasets in a list called `imputed_list` 
+num_imputations <- length(filtered_imputed_list) 
+# Create placeholders to store coefficients and standard errors 
+coef_list <- list() 
+se_list <- list() 
+# Fit Cox model on each imputed dataset 
+for (i in 1:num_imputations) { 
+  ps_model <- glm(treatment ~ age_group +
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+             filtered_imputed_list[[i]], family = binomial())
+  filtered_imputed_list[[i]]$pscore <- predict(ps_model, type="response")
+
+  cox_model <- coxph(Surv(TTNT_months, fstatus_combined) ~ as.factor(treatment) + age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy +pscore, data = filtered_imputed_list[[i]]) 
+  coef_list[[i]] <- coef(cox_model) # Store coefficients 
+  se_list[[i]] <- sqrt(diag(vcov(cox_model))) # Store standard errors 
+  } 
+# Convert lists to matrices 
+coef_matrix <- do.call(rbind, coef_list) 
+se_matrix <- do.call(rbind, se_list) 
+# Calculate pooled estimates (Rubin's Rules) 
+mean_coefs <- colMeans(coef_matrix) # Average of the coefficients 
+# Calculate within-imputation variance 
+within_var <- colMeans(se_matrix^2) 
+# Calculate between-imputation variance 
+between_var <- apply(coef_matrix, 2, var) 
+# Compute total variance using Rubin's formula 
+total_var <- within_var + (1 + (1/num_imputations)) * between_var 
+# Compute pooled standard errors 
+pooled_se <- sqrt(total_var) 
+# Compute 95% confidence intervals 
+lower_CI <- mean_coefs - 1.96 * pooled_se 
+upper_CI <- mean_coefs + 1.96 * pooled_se 
+# Convert coefficients to hazard ratios 
+hr_estimates <- exp(mean_coefs) 
+hr_lower_CI <- exp(lower_CI) 
+hr_upper_CI <- exp(upper_CI) 
+# Print results 
+doubly_robust_results <- data.frame( Variable = names(mean_coefs), HR = hr_estimates, Lower_CI = hr_lower_CI, Upper_CI = hr_upper_CI )
+print(doubly_robust_results)
+```
+
+# Overlap Weighting
+```{r}
+# #install.packages("PSweight")
+# library(PSweight)
+# imputation_results <- list()
+# for (i in 1:22) { 
+# dat <- filtered_imputed_list[[i]]
+# dat$gender <- as.factor(dat$gender)
+# dat$treatment<- as.factor(dat$treatment)
+# ps_model <- glm(treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy,
+#               dat, family = binomial())
+# # wt<-WeightIt::weightit(treatment ~ age_group+
+# #                gender + issstage + asct + combined_ecog+
+# #                  risk_group + sesindex2015_2019 +
+# #                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+# #                + practicetype + Deletion.13q + Ploidy,
+# #               dat,
+# #               stabilize = TRUE,
+# #               method = "ps")
+# # dat$ps_weights <- wt$weights
+# dat$pscore <- predict(ps_model, type="response")
+# dat$overlap_weights <- ifelse(dat$treatment == 1, 1-dat$pscore, dat$pscore)
+# 
+# 
+# design <- svydesign(ids = ~1, data =dat, weights = ~overlap_weights )
+# 
+#     table1 <- svyCreateTableOne( vars =  vars, strata = "treatment", data = design, test =FALSE, addOverall = TRUE)
+#     
+#     smd_values <- data.frame(
+#       Variable = vars,
+#       SMD = ExtractSmd(table1),
+#       Imputation = i,
+#       stringsAsFactors = FALSE)
+#     
+#     print(summary(dat$overlap_weights))
+#     plot(dat$overlap_weights)
+#   imputation_results[[i]] <- smd_values
+# }
+# all_smds <- do.call(rbind, imputation_results)
+# 
+# # generating proprotions 
+# library(dplyr)
+# proportions_by_variable <- all_smds %>%
+#   group_by(Variable) %>%
+#   summarise(
+#     proportion_exceeding_0.1 = sum(X1.vs.2 >0.1)/n()
+#   )
+# print(proportions_by_variable)
+# 
+# # visualization
+# ggplot(proportions_by_variable , aes(x=reorder(Variable,proportion_exceeding_0.1),
+#                                                y =proportion_exceeding_0.1)) +
+#   geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Proportions of SMDs Exceeding 0.1 by Covariate",
+#                                                          x = "Covariate",
+#                                                          y = "Proportions Exceeding 0.1") +
+#   theme_minimal() + coord_flip()
+# 
+# # average SMDs across imputations
+# smd_avg_iptw_1 <- all_smds%>% group_by(Variable) %>%
+#   summarise(Mean_SMD = round(mean(X1.vs.2),3)
+#             ) %>% arrange(desc(abs(Mean_SMD)))
+# print(smd_avg_iptw_1)
+# 
+# all_smds_2 <- all_smds %>% left_join(smd_avg_iptw_1, by = "Variable")
+# all_smds_3 <- all_smds_2 %>% left_join(proportions_by_variable, by = "Variable")
+# 
+# ggplot(dat, aes(x = pscore, fill = factor(treatment)))+
+#   geom_density(alpha = 0.5) 
+# 
+# #overall
+# ggplot(all_smds_3, aes(x = X1.vs.2, y = Variable)) + 
+#   geom_point(alpha=0.5, size =2) +
+#   geom_vline(xintercept = c(0.1), linetype = "dashed", color="red") +
+#   geom_point( aes(x = Mean_SMD, y = Variable), color ="blue", size = 3) +  labs(title = "SMDs Across Imputations",x="SMD",y = "Coavariate") + theme_minimal() + geom_text(aes(x = max(all_smds_3$X1.vs.2+0.05), y = reorder(Variable,proportion_exceeding_0.1),  label =  round( proportion_exceeding_0.1,2)))
+# 
+# cox_model1 <- svycoxph(Surv(TTNT_months, fstatus_combined)  ~ treatment, design = design)
+# print(cox_model1)
+# 
+# dat$Y <- Surv(dat$OS, dat$event)
+# 
+# a<- PSweight(
+#   ps.formula = treatment ~ age_group+
+#                gender + issstage + asct + combined_ecog+
+#                  risk_group + sesindex2015_2019 +
+#                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+#                + practicetype + Deletion.13q + Ploidy,
+#   yname = 'Y',
+#   data=dat,
+#   weight = 'overlap',
+#   out.method = "coxph",
+# )
+# a
+# 
+# boxplot(overlap_weights ~ treatment, data = dat)
+# ggplot(dat, aes(x = overlap_weights, fill = factor(treatment))) +
+#   geom_density(alpha = 0.5)
+# 
+# # library(cobalt)
+# # bal_tab <- bal.tab(treatment ~ age_group+
+# #                gender + issstage + asct + combined_ecog+
+# #                  risk_group + sesindex2015_2019 +
+# #                  year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+# #                + practicetype + Deletion.13q + Ploidy,
+# #                data = dat,
+# #                weights = dat$overlap_weights)
+# # love.plot(bal_tab)
+# 
+# print(table1, smd = TRUE, digits = 10)
+# table2 <- CreateTableOne( vars =  vars, strata = "treatment", data = dat, test =FALSE, addOverall = TRUE)
+# print(table2, smd = TRUE)
+# ```
+# ##### Comparisons of Covariate Balance
+# ```{r}
+# ## Construct a data frame containing variable name and SMD from all methods
+# dataPlot <- data.frame(variable   = tabUnmatched$Variable,
+#                        Unmatched  = as.numeric(tabUnmatched$Mean_SMD),
+#                       
+#                        Matched_caliper_0.1  = as.numeric(smd_avg_nn0.1_1$Mean_SMD),
+#                        Matched_nerest_neighbor = as.numeric(tabMatched_caliper_1$Mean_SMD),
+#                        IPTW = as.numeric(smd_avg_iptw_1$Mean_SMD),
+#                        IPTW_with_trimming = as.numeric(iptw_trimmed_1$Mean_SMD)
+#                        # weighted_iptw =as.numeric(ExtractSmd(tabWeighted))
+#                        )
+# # Matched_optimal  = as.numeric(tabMatched_optimal_1$Mean_SMD),
+# ## Create long-format data for ggplot2
+# dataPlotMelt <- melt(data          = dataPlot,
+#                      id.vars       = c("variable"),
+#                      variable.name = "Method",
+#                      value.name    = "SMD")
+# 
+# ## Order variable names by magnitude of SMD
+# varNames <- as.character(dataPlot$variable)[order(dataPlot$Unmatched,decreasing = FALSE)]
+# 
+# ## Order factor levels in the same order
+# dataPlotMelt$variable <- factor(dataPlotMelt$variable,
+#                                 levels = varNames)
+# 
+# ## Plot using ggplot2
+# ggplot(data = dataPlotMelt,
+#        mapping = aes(x = variable, y = SMD, group = Method, color = Method)) +
+#     geom_line() +
+#     geom_point() +
+#     geom_hline(yintercept = 0.1, color = "black", size = 0.1) +
+#     coord_flip() +
+#     theme_bw() +
+#     theme(legend.key = element_blank()) + scale_y_continuous(limits = c(0,0.5))
+# ###############################################################################################################
+# ## Construct a data frame containing variable name and SMD from all methods
+# dataPlot <- data.frame(variable   = tabUnmatched$Variable,
+#                        Unmatched  = as.numeric(tabUnmatched$Mean_SMD),
+#                       
+#                        Matched_caliper_0.1  = as.numeric(smd_avg_nn0.1$Mean_SMD),
+#                        Matched_nerest_neighbor = as.numeric(tabMatched_caliper$Mean_SMD),
+#                        IPTW = as.numeric(smd_avg_iptw$Mean_SMD),
+#                        IPTW_with_trimming = as.numeric(iptw_trimmed$Mean_SMD)
+#                        # weighted_iptw =as.numeric(ExtractSmd(tabWeighted))
+#                        )
+# # Matched_optimal  = as.numeric(tabMatched_optimal$Mean_SMD),
+# 
+# ## Create long-format data for ggplot2
+# dataPlotMelt <- melt(data          = dataPlot,
+#                      id.vars       = c("variable"),
+#                      variable.name = "Method",
+#                      value.name    = "SMD")
+# 
+# ## Order variable names by magnitude of SMD
+# varNames <- as.character(dataPlot$variable)[order(dataPlot$Unmatched,decreasing = FALSE)]
+# 
+# ## Order factor levels in the same order
+# dataPlotMelt$variable <- factor(dataPlotMelt$variable,
+#                                 levels = varNames)
+# 
+# ## Plot using ggplot2
+# ggplot(data = dataPlotMelt,
+#        mapping = aes(x = variable, y = SMD, group = Method, color = Method)) +
+#     geom_line() +
+#     geom_point() +
+#     geom_hline(yintercept = 0.1, color = "black", size = 0.1) +
+#     coord_flip() +
+#     theme_bw() +
+#     theme(legend.key = element_blank()) + scale_y_continuous(limits = c(0,0.5))
+```
+
+
+# PS stratification
+
+```{r}
+num_imputations <- length(filtered_imputed_list) 
+ate_results <- list() 
+att_results <- list() 
+
+for (i in 1:num_imputations) { 
+  imputed_subset <- filtered_imputed_list[[i]] 
+  
+  # Step 1: Estimate propensity scores 
+  ps_model <- glm(treatment ~ age_group+
+               gender + issstage + asct + combined_ecog+
+                 risk_group + sesindex2015_2019 +
+                 year_diag_group + hemoglobin + marker_calcium_result + marker_creatinie_result
+               + practicetype + Deletion.13q + Ploidy,
+              imputed_subset, family = binomial())
+  
+  imputed_subset$ps <- predict(ps_model, type = "response") 
+  
+  # Step 2: Create 5 strata based on quintiles 
+  imputed_subset$strata <- cut(imputed_subset$ps, breaks = quantile(imputed_subset$ps, probs = seq(0, 1, 0.2), na.rm = TRUE), include.lowest = TRUE, labels = FALSE) 
+  
+  # Step 3: Calculate strata weights 
+  strata_counts <- imputed_subset %>% 
+    group_by(strata) %>% 
+    summarise(n_treated  = sum(treatment == 1), 
+              n_control = sum(treatment == 0), 
+              n_total = n()) 
+  
+  # Step 4: Fit Cox models within each stratum and extract HR and SE 
+  stratum_results <- list() 
+  
+  for (s in unique(imputed_subset$strata)) { 
+    stratum_data <- imputed_subset %>% filter(strata == s) 
+    
+    # Cox model for ATE (all subjects) 
+    cox_model <-coxph(Surv(TTNT_months, fstatus_combined) ~ as.factor(treatment), data = stratum_data) 
+    
+    # Extract log HR and SE
+    hr <- exp(coef(cox_model)[1])
+    se <- sqrt(diag(vcov(cox_model))[1])
+    
+    stratum_results[[s]] <- data.frame(
+      Stratum = s, 
+      HR = hr,
+      logHR = log(hr),
+      SE = se,
+      Treated = strata_counts$n_treated[s],
+      Total = strata_counts$n_total[s]
+    )
+  }
+    stratum_df <- do.call(rbind, stratum_results)
+    # Step 5: Calculate pooled ATE and ATT using stratum sample sizes 
+    
+    # ATE: Weighted by total stratum size (treated + control) 
+    ate_log_hr <- sum(stratum_df$Total * stratum_df$logHR) / sum(stratum_df$Total) 
+    ate_var <- sum((stratum_df$Total^2 * stratum_df$SE^2)) / (sum(stratum_df$Total)^2) 
+    ate_se <- sqrt(ate_var) 
+    
+    # ATT: Weighted by number of treated units 
+    att_log_hr <- sum(stratum_df$Treated * stratum_df$logHR) / sum(stratum_df$Treated) 
+    att_var <- sum((stratum_df$Treated^2 * stratum_df$SE^2)) / (sum(stratum_df$Treated)^2) 
+    att_se <- sqrt(att_var) 
+    
+    # Store pooled results for each imputation 
+    ate_results[[i]] <- data.frame(LogHR = ate_log_hr, SE = ate_se) 
+    att_results[[i]] <- data.frame(LogHR = att_log_hr, SE = att_se) } 
+
+# Step 6: Pool results across multiple imputations using Rubin's Rules 
+pool_rubin <- function(results_list) { 
+  m <- length(results_list) 
+  logHR_vals <- sapply(results_list, function(x) x$LogHR) 
+  se_vals <- sapply(results_list, function(x) x$SE) 
+  
+  # Calculate pooled log HR
+  pooled_logHR <- mean(logHR_vals) 
+  
+  # Calculate within-imputation variance 
+  within_var <- mean(se_vals^2) 
+  
+  # Calculate between-imputation variance 
+  between_var <- var(logHR_vals) 
+  
+  # Total variance 
+  total_var <- within_var + (1 + (1 / m)) * between_var 
+  
+  # Final pooled SE 
+  pooled_se <- sqrt(total_var) 
+  
+  # Convert log HR back to HR 
+  pooled_hr <- exp(pooled_logHR) 
+  lower_ci <- exp(pooled_logHR - 1.96 * pooled_se) 
+  upper_ci <- exp(pooled_logHR + 1.96 * pooled_se) 
+  
+  return(data.frame( Pooled_HR = pooled_hr, SE = pooled_se, Lower_CI = lower_ci, Upper_CI = upper_ci )) } 
+
+# Step 7: Get final pooled results for ATE and ATT 
+final_ate_results <- pool_rubin(ate_results) 
+final_att_results <- pool_rubin(att_results) 
+
+# Print results 
+cat("Pooled ATE Results:\n") 
+print(final_ate_results) 
+
+cat("\nPooled ATT Results:\n") 
+print(final_att_results)
+
+final_ate_results <- final_ate_results %>% rename(HR = Pooled_HR) %>% mutate(Variable = "as.factor(treatment)1")
+final_att_results <- final_att_results %>% rename(HR = Pooled_HR) %>% mutate(Variable = "as.factor(treatment)1")
+
+```
+
+
+# Tables
+```{r}
+library(dplyr) 
+library(purrr) 
+
+# Function to extract and combine treatment effect results 
+aggregate_treatment_results <- function(results_list, method_names, treatment_var = "as.factor(treatment)1") 
+{ 
+  # Add method names to each dataframe 
+  named_results <- map2(results_list, method_names, ~mutate(.x, Method = .y)) 
+  # Combine all results into one dataframe 
+  combined_results <- bind_rows(named_results) 
+  # Filter for the treatment variable only 
+  treatment_results <- combined_results %>% 
+    filter(Variable == treatment_var) %>% select(Method, Variable, HR, Lower_CI, Upper_CI) %>% rename( Hazard_Ratio = HR)
+  return(treatment_results) }
+
+```
+
+```{r}
+# List of results from different PS methods 
+results_list <- list(crude_results, 
+                     cov_adj_results, 
+                     nn_results,
+                     nn_0.1_results,
+                     optimal_results,
+                     iptw_trimming_results,
+                     stablized_iptw_results,
+                     final_ate_results,
+                     doubly_robust_results
+                     ) 
+method_names <- c("Crude", 
+                  "Covariate Adjustment", 
+                  "Nerest Neighbor Matching",
+                  "Nerest Neighbor Matching (caliper width = 0.2)",
+                  "Optimal Matching",
+                  "IPTW (with trimming)",
+                  "Stablized IPTW",
+                   "PS Stratification (5 strata) - ATE",
+                  "PS as Covariate"
+                  )
+
+c <- aggregate_treatment_results(results_list, method_names)
+c <- c %>% select(Method,Hazard_Ratio, Lower_CI, Upper_CI);
+rownames(c) <- NULL
+
+b <- c
+b$Hazard_Ratio <- round(b$Hazard_Ratio,2)
+b$Lower_CI <- round(b$Lower_CI,2)
+b$Upper_CI <- round(b$Upper_CI,2)
+print(b)
+```
+
+# Forest Plot
+```{r}
+# List of results from different PS methods 
+results_list <- list(crude_results, 
+                     cov_adj_results, 
+                     nn_results,
+                     nn_0.1_results,
+                     optimal_results,
+                     iptw_trimming_results,
+                     stablized_iptw_results,
+                   #  final_att_results,
+                     final_ate_results,
+                     doubly_robust_results
+                     ) 
+method_names <- c("Crude", 
+                  "Covariate Adjustment", 
+                  "NNM",
+                  "NNM (caliper width = 0.2)",
+                  "Optimal Matching",
+                  "IPTW (5% trimming)",
+                  "Stablized IPTW",
+                 #"PS Stratification (5 strata) - ATT",
+                   "PS Stratification (5 strata)",
+                  "PS as Covariate"
+                  )
+
+c <- aggregate_treatment_results(results_list, method_names)
+c <- c %>% select(Method,Hazard_Ratio, Lower_CI, Upper_CI);
+rownames(c) <- NULL
+
+b <- c
+b$Hazard_Ratio <- round(b$Hazard_Ratio,3)
+b$Lower_CI <- round(b$Lower_CI,3)
+b$Upper_CI <- round(b$Upper_CI,3)
+
+b <- b %>%
+  rename(
+    HR = Hazard_Ratio,
+    `95% CI Lower` = Lower_CI,
+    `95% CI Upper` = Upper_CI
+  )
+
+print(b)
+knitr::kable(b, caption = "Hazard Ratios and 95% Confidence Intervals by Method")
+saveRDS(b, "Other Races_TTNT table.rds")
+```
+
+```{r}
+library(dplyr)
+library(forestplot)
+
+# Step 1: Prepare table data
+table_data <- data.frame(
+Method = as.character(b$Method),
+HR = sprintf("%.2f", b$HR),
+CI = sprintf("[%.2f, %.2f]", b$`95% CI Lower`, b$`95% CI Upper`)
+)
+
+# Step 3: Create label text (left side) showing Method, logHR, logSE
+label_text <- cbind(
+table_data$Method,
+table_data$HR,
+ table_data$CI
+)
+
+# Step 4: Add header row
+label_text <- rbind(c("Method", "HR", "95% CI"),
+                     label_text)
+is_summary <- c(TRUE,  rep(FALSE, nrow(table_data)))
+# Step 5: Bold only the header row
+label_styles <- fpTxtGp(
+label = list(
+gpar(fontface = c("plain", rep("plain", nrow(table_data))),fontsize = 11, fontfamily ="serif"),
+gpar(fontface = c("plain", rep("plain", nrow(table_data))),fontsize = 11, fontfamily ="serif"),
+gpar(fontface = c("plain", rep("plain", nrow(table_data))),fontsize = 11, fontfamily ="serif")
+),
+ticks = gpar(fontsize = 10, fontfamily ="serif"),
+xlab = gpar(fontsize = 11, fontfamily ="serif"),
+title = gpar(fontface = "bold", fontsize = 14)
+)
+
+# Step 6: Plot forestplot
+my_plot <- forestplot(
+labeltext = label_text,
+mean = c(NA,  table_data$HR),
+lower = c(NA, b$`95% CI Lower`),
+upper = c(NA, b$`95% CI Upper`),
+zero = 1,
+boxsize = 0.2,
+line.margin = 0.3,
+is.summary = is_summary,
+lwd.zero = 2,
+graph.pos = 4, # 4th column for plot
+col = fpColors(box = "royalblue", line = "darkblue", zero = "black"),
+txt_gp = label_styles,
+xlab = "Hazard Ratio (HR) with 95% CI",
+xticks = seq(0.6,1.4,by=0.1)
+)
+saveRDS(my_plot, "Other Races_TTNT Forest.rds")
+
+```
+# Complete data analysis comparison
+```{r}
+completed_data <- read.csv("Other Races_complete_data_results_ttnt.csv")
+
+# Load libraries 
+library(ggplot2) 
+library(dplyr) 
+
+# Assuming you have the imputed results 
+# Combine datasets for comparison 
+combined_data <- bind_rows(completed_data %>% mutate(`Analysis Type` = "Complete Case"), c %>% mutate(`Analysis Type` = "Imputed Data") ) 
+# Define the desired order manually
+desired_order <- c("PS as Covariate",
+                   "PS Stratification (5 strata)",
+                 #  "PS Stratification (5 strata) - ATT",
+                   "Stablized IPTW",
+                   "IPTW (5% trimming)",
+                    "Optimal Matching",
+                   "NNM (caliper width = 0.2)",
+                    "NNM",
+                    "Covariate Adjustment",
+                   "Crude")
+
+# Convert Method column to factor with specified order
+combined_data$Method <- factor(combined_data$Method, levels = desired_order)
+
+# Create a forest plot 
+p <- ggplot(combined_data, aes(x = Method, y = Hazard_Ratio, color = `Analysis Type`)) + geom_point(position = position_dodge(width = 0.5), size = 3) + geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), position = position_dodge(width = 0.5), width = 0.3) + coord_flip() + labs( x = "Method", y = "HR with 95% CI") + scale_y_continuous(limits = c(0.6, 1.4)) + theme_minimal()
+
+saveRDS(p, "Other Races_comparison_ttnt")
+```
+
+
+
+
+
+
+
+
+
