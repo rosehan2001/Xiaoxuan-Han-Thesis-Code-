@@ -1,0 +1,4259 @@
+---
+title: "Appendix Code"
+author: "Xiaoxuan Han"
+date: "2024-05-16"
+output:
+  html_document:
+    code_folding: hide
+    keep_md: true
+  pdf_document: default
+    latex_engine: xelatex
+knitr:
+  opts_chunk:
+    echo: TRUE
+    eval: FALSE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(DBI)
+library(dplyr, warn.conflicts = FALSE)
+library(dbplyr, warn.conflicts = FALSE)
+library(tidyverse)
+library(skimr)
+library(stringr)
+library(lubridate)
+library(DescTools)
+library(data.table)
+library(arrow) # write parquet
+library(RocheData)
+library(tidyverse)
+library(RPostgres)
+```
+
+
+```{r}
+## 1. Read data (EDM)
+con <- dbConnect(odbc::odbc(), Driver="redshift",
+                 Server = "redshift-03-eu.dap.apollo.roche.com",
+                 Port = "5439", Database = "flatiron_edm_mm",
+                 UID = readLines('./config.txt', warn = FALSE)[1],
+                 PWD = readLines('./config.txt', warn = FALSE)[2],
+                 BoolsAsChar = 0, timeout = 20)
+
+## read single table
+get_table <- function(con, table,
+                      schema = 'flatiron_edm_mm_sdm_latest'){
+  tbl(con, dbplyr::in_schema(schema, table)) %>%
+    select_all() %>%
+    select_all(stringr::str_to_lower) %>%
+    mutate_if(lubridate::is.POSIXt, lubridate::as_date)
+}
+
+```
+
+# Load in needed datasets 
+```{r}
+baselineecog_mm_edm <- get_table(con = con, table = 'baselineecog') %>% collect()
+diagnosis_mm_edm <- get_table(con = con, table = 'diagnosis') %>% collect()
+enhanced_mm_original <- get_table(con = con, table = 'enhanced_multiplemyeloma') %>% collect() # primary dataset to use
+demographics_mm_edm <- get_table(con = con, table = 'demographics') %>% collect()
+practice <-  get_table(con = con, table = 'practice') %>% collect()
+ecog <-  get_table(con = con, table = 'ecog') %>% collect()
+genetic_test <- get_table(con = con, table = 'enhanced_mm_genetictest') %>% collect()
+transplant <-  get_table(con = con, table = 'enhanced_mm_transplant') %>% collect()
+m_spike <- get_table(con = con, table = 'enhanced_mm_mspike') %>% collect()
+extracted_labs <- get_table(con = con, table = 'extractedlabs') %>% collect()
+lab <- get_table(con = con, table = 'lab') %>% collect()
+regimen <- get_table(con = con, table = 'enhanced_mm_regimen') %>% collect()
+orals <-  get_table(con = con, table = 'enhanced_mm_orals') %>% collect()
+cartcell <-  get_table(con = con, table = 'enhanced_mm_cart') %>% collect()
+lineoftherapy <- get_table(con = con, table = 'lineoftherapy') %>% collect()
+ses <- get_table(con = con, table = 'socialdeterminantsofhealth') %>% collect()
+enhanced_mm_progression_v2 <- get_table(con = con, table = 'enhanced_mm_progression_v2') %>% collect()
+
+medicationorder <-  get_table(con = con, table = 'medicationorder') %>% collect()
+enhanced_mortality_v2 <-  get_table(con = con, table = 'enhanced_mortality_v2') %>% collect()
+
+#newly added
+medication_admin <-  get_table(con = con, table = 'medicationadministration') %>% collect()
+sampling_details <-  get_table(con = con, table = 'samplingdetails') %>% collect()
+enhanced_discont <-  get_table(con = con, table = 'enhanced_multiplemyeloma_discontinuationreason') %>% collect()
+visit <-  get_table(con = con, table = 'visit') %>% collect()
+drugepisode <- get_table(con = con, table = 'drugepisode') %>% collect()
+```
+
+```{r}
+baselineecog_mm_edm <- baselineecog_mm_edm
+diagnosis_mm_edm <- diagnosis_mm_edm
+enhanced_mm <- enhanced_mm_original
+demographics_mm_edm <- demographics_mm_edm
+practice <- practice
+ecog <- ecog
+genetic_test <- genetic_test
+transplant <- transplant
+m_spike <- m_spike
+extracted_labs <- extracted_labs
+lab <- lab
+regimen <- regimen
+orals <- orals
+cartcell <- cartcell
+lineoftherapy <- lineoftherapy
+ses <- ses
+enhanced_mm_progression_v2 <- enhanced_mm_progression_v2
+enhanced_mortality_v2 <- enhanced_mortality_v2
+medication_admin <- medication_admin
+sampling_details <- sampling_details
+enhanced_discont <- enhanced_discont
+visit <- visit
+drugepisode <- drugepisode
+```
+
+
+```{r}
+# DO NOT RUN THIS EVERYTIME
+
+
+# Save snapshot of filtered dataset
+saveRDS(baselineecog_mm_edm_1L, "baselineecog_mm_edm_1L_snapshot.RDS")
+# Load snapshot to ensure consistent data
+baselineecog_mm_edm_1L <- readRDS("baselineecog_mm_edm_1L_snapshot.RDS")
+
+# Save snapshot of filtered dataset
+saveRDS(enhanced_mm, "enhanced_mm_edm_1L_snapshot.RDS")
+# Load snapshot to ensure consistent data
+enhanced_mm<- readRDS("enhanced_mm_edm_1L_snapshot.RDS")
+
+# Save snapshot of filtered dataset
+saveRDS(lineoftherapy, "lineoftherapy.RDS")
+# Load snapshot to ensure consistent data
+lineoftherapy<- readRDS("lineoftherapy.RDS")
+
+```
+
+# Merging datasets
+##Step 1: obtain the 1L cohort
+```{r}
+length(unique(baselineecog_mm_edm$patientid))
+
+# Step 1: obtain the 1L cohort - contain structured and unstructured patient data
+baselineecog_mm_edm_1L <- baselineecog_mm_edm %>% filter(linenumber == 1) %>% 
+  group_by(patientid) %>% mutate(earliest_1L = min(as.Date(linestartdate))) %>% filter(linestartdate == earliest_1L) %>%
+  select(-earliest_1L) %>% ungroup()
+ 
+```
+
+##Step 2: select the obs. treated with 1st line & 60 days of selection
+```{r}
+# earliest 2011-01-01, latest 2024-04-01
+enhanced_mm <- enhanced_mm %>% filter(diagnosisdate < as.Date("2024-05-31"))
+# Note: no duplicated patient IDs in enhanced_mm
+library(tidyr)
+enhanced_mm <- enhanced_mm %>% left_join(baselineecog_mm_edm_1L, by = "patientid")
+
+# check NA in linenumber 
+sum(is.na(enhanced_mm$linenumber)) # 1,412 obs. not from 1L - remove 
+
+# latest linestartdate - "2024-04-30"
+enhanced_mm <- enhanced_mm %>% filter(linestartdate < as.Date("2024-04-30"))
+
+# select patients within 60 days of diaganosis 
+enhanced_mm_1L <- enhanced_mm[!is.na(enhanced_mm$linenumber),] # with 1L 
+enhanced_mm$selection_60 <- as.Date(enhanced_mm$linestartdate)-as.Date(enhanced_mm$diagnosisdate)
+enhanced_mm_1L_60days <- enhanced_mm  %>% filter(selection_60 <= 60) # selected within 60 days
+```
+##Step 2.1: remove incorrect data records (patients with negative day values)
+```{r}
+enhanced_mm_1L_60days_test <- enhanced_mm_1L_60days %>% filter(selection_60 < 0) # 152 negative values? - around 20 days of difference
+
+# leave negative values out - there are patients who got 1L treatment before the diagnosis date
+enhanced_mm_1L_60days <- enhanced_mm_1L_60days %>% filter(selection_60 >= 0) # 11,820 obs. left
+```
+11,820 patients for the analysis cohort
+
+##Merge practice (site of care)
+```{r}
+practice_unique <- practice %>% distinct(patientid, practicetype, .keep_all = TRUE) # 19187-18910 = 277 duplicates that have the same values 
+
+# still have duplicated patientids
+
+freq_table <- table(practice_unique$patientid)
+duplicated_values <- freq_table[freq_table>1]
+
+dup <- as.data.frame(duplicated_values)
+# dup$Var1
+
+view <- enhanced_mm_1L_60days[enhanced_mm_1L_60days$patientid %in% dup$Var1,]
+practice[practice$patientid %in% c("F0A424B7BC97E"),]
+
+dat <- enhanced_mm_1L_60days %>% left_join(practice_unique, by = "patientid") # dat: 12,087 obs. 
+
+patient_counts <- dat %>% group_by(patientid) %>% summarise(count=n())
+multiple_records_ids <- patient_counts %>% filter(count>1) %>% pull(patientid) # 405 obs. 
+
+# set to another type
+dat <- dat %>% 
+  mutate(practicetype = if_else(patientid %in% multiple_records_ids, "Both Academic & Community", practicetype))
+dat <- dat %>% distinct(patientid, practicetype, .keep_all = TRUE)
+```
+# Dataset name: dat
+##Merge Transplant
+```{r}
+# transplant types and counts(1-4)
+transplant_cleaned <- transplant %>% 
+  filter(transplanttype != "Unknown/Missing") %>% 
+  group_by(patientid) %>%
+  summarise(
+    transplant_count = n(),
+    transplant_types = paste(unique(transplanttype), collapse = ","),
+    multiple_transplants = ifelse(n()>1, "Yes", "No")
+  )
+
+transplant_cleaned <- transplant_cleaned %>% mutate(transplant_type_2 = 
+                                                      ifelse(transplant_types %in%
+                                                               c("Autologous,Allogeneic",
+                                                                 "Allogeneic,Autologous"), "Allogeneic,Autologous", transplant_types))
+
+dat <- dat %>% left_join(transplant_cleaned, by = "patientid")
+
+latest_transplant <- transplant %>% group_by(patientid) %>% filter(stemcelltransplantdate == 
+                                                                     max(stemcelltransplantdate)) %>% ungroup() %>% select(stemcelltransplantdate,patientid)
+
+dat <- dat %>% left_join(latest_transplant,by = "patientid")
+```
+DID NOT look at transplant date - look into this after if needed
+
+##Merging SES data 
+```{r}
+dat <- dat %>% left_join(ses, by = "patientid")
+```
+
+#Recategorization
+##Combined Race & Ethnicity - 6 categories: Non-hispanic white, non-hispanic african American, hispanic or latino, non-hispanic Asian, other race, Missing
+```{r}
+# load in last dataset
+dat <- dat %>% left_join(demographics_mm_edm, by = "patientid")
+
+dat <- dat %>%
+  mutate(combined_race_ethnicity = case_when(
+    race == "Hispanic or Latino" ~ "Hispanic or Latino",
+    ethnicity == "Hispanic or Latino" & race %in% c("White", "Black or African American", "Asian", "Other Race") ~ "Hispanic or Latino",
+    ethnicity == "Not Hispanic or Latino" & race == "White" ~ "White",
+    ethnicity == "Not Hispanic or Latino" & race == "Black or African American" ~ "African American",
+    ethnicity == "Not Hispanic or Latino" & race == "Asian" ~ "Asian",
+    ethnicity == "Not Hispanic or Latino" & race == "Other Race" ~ "Other Races",
+    TRUE ~ "Unknown/Missing"
+  ))
+```
+
+##ECOG value
+```{r}
+dat <- dat %>%
+  mutate(combined_ecog = case_when(
+    ecogvalue == "0" ~ "0-1",
+    ecogvalue == "1" ~ "0-1",
+    ecogvalue == "2" ~ "≥2",
+    ecogvalue == "3" ~ "≥2",
+    ecogvalue == "4" ~ "≥2",
+    ecogvalue == "Unknown" ~ "Unknown/Missing"
+  ))
+```
+
+##Age at 1st treatment
+```{r}
+dat$birthyear_1 <- as.Date(paste0(dat$birthyear,"-06-15")) # assuming 06-15 of the year
+dat$age_at_1L <- time_length(interval(dat$birthyear_1, dat$linestartdate), "years")
+```
+
+##Birth sex (gender) - remove NA
+```{r}
+dat <- dat %>% filter(!is.na(birthsex))
+```
+
+################################################################## data merge ends here before merging biomarker 
+
+##Biomarkers
+```{r}
+#genetic_test <- get_table(con = con, table = 'enhanced_mm_genetictest') %>% collect()
+
+# only use the FISH test results and Kartyotype for "Deletion 13" 
+genetic_test_cleaned <- genetic_test %>% filter(testtype == "FISH"|testtype == "Karyotype" & marker == "Deletion 13"|testtype == "Karyotype" & marker == "Ploidy" |testtype == "Karyotype" & marker == "Trisomy" ) # 268918->240947
+
+genetic_test_cleaned_2 <- genetic_test_cleaned %>% mutate(abnormality = case_when(
+  abnormality == "Present" ~ 1,
+  abnormality == "Absent" ~ 2,
+  abnormality == "Unknown/not documented" ~ 3,
+  abnormality == "Hyperdiploid"  ~ 1,
+  abnormality == "Hypodiploid" ~ 2,TRUE ~  3))
+
+# save lowest number, then max date
+genetic_test_cleaned_2 <- genetic_test_cleaned_2 %>% 
+  group_by(patientid, marker) %>% filter(abnormality == min(abnormality)
+) %>% filter(specimencollecteddate == max(specimencollecteddate)) %>% slice(1) %>% ungroup()
+
+genetic_test_cleaned_2 <- genetic_test_cleaned_2 %>% left_join(select(dat, patientid, linestartdate), by = "patientid") %>%
+  mutate(abnormality= ifelse(specimencollecteddate > linestartdate, NA, abnormality))
+
+genetic_test_cleaned_2 <- genetic_test_cleaned_2 %>% select(patientid, marker, abnormality) %>%
+  pivot_wider(names_from = marker, values_from = abnormality )
+
+genetic_test_cleaned_2 <- genetic_test_cleaned_2 %>% mutate_all(~ replace_na(.,3))
+
+genetic_test_cleaned_2 <- genetic_test_cleaned_2 %>% mutate(across(where(is.list), ~ as,numeric(unlist(.)))) 
+
+new_dat <- dat %>% left_join(genetic_test_cleaned_2, by ="patientid")
+
+
+```
+##Biomarkest test status - THIS NEED TO BE REDONE
+```{r}
+# # biomarkert_test_status <- genetic_test %>% group_by(patientid,marker) %>% summarise()
+# # new_dat_id <- new_dat %>% select(patientid, combined_race_ethnicity)
+# # new_dat_id <- new_dat_id %>% left_join(biomarkert_test_status, by = "patientid")
+# # summary_status <- new_dat_id %>% group_by(patientid, marker) %>% summarise()
+# 
+# # List of biomarkers you are interested in
+# biomarkers_of_interest <- c("t(11;14)", "t(14;16)", "t(4;14)", "Amplification 1q21", "Deletion 13q", "Deletion 17p", "Deletion 1p")
+# 
+# # Create a function to check if a biomarker is present
+# biomarker_check <- function(data, biomarker) {
+#   data %>%
+#     group_by(patientid) %>%
+#     summarise(!!paste0("has_", biomarker) := any(marker == biomarker))
+# }
+# 
+# # Apply the function for each biomarker and combine results
+# biomarker_tested <- biomarkers_of_interest %>%
+#   lapply(function(marker) biomarker_check(new_dat_id, marker)) %>%
+#   reduce(full_join, by = "patientid")
+# 
+# # View the result
+# print(biomarker_tested)
+```
+```{r}
+# biomarker_tested <- biomarker_tested %>% left_join(select(new_dat, combined_race_ethnicity, patientid), by = "patientid")
+# 
+# # Assuming your data frame is named 'data' and contains the columns 'patientid', 'marker', and 'combined_race_ethnicity'
+# # List of biomarkers you are interested in
+# biomarkers_of_interest <- c("t(11;14)", "t(14;16)", "t(4;14)", "Amplification 1q21", "Deletion 13q", "Deletion 17p", "Deletion 1p")
+# 
+# # Create a function to check if a biomarker is present
+# biomarker_check_by_race <- function(data, biomarker) {
+#   data %>%
+#     group_by(combined_race_ethnicity) %>%
+#     summarise(
+#       total_patients = n(),
+#       tested = sum(marker == biomarker, na.rm = TRUE),
+#       not_tested = total_patients - tested,
+#       percent_tested = (tested / total_patients) * 100,
+#       percent_not_tested = (not_tested / total_patients) * 100
+#     ) %>%
+#     select(combined_race_ethnicity, total_patients, tested, not_tested, percent_tested, percent_not_tested) %>%
+#     rename(
+#       !!paste0("total_patients_", biomarker) := total_patients,
+#       !!paste0("tested_", biomarker) := tested,
+#       !!paste0("not_tested_", biomarker) := not_tested,
+#       !!paste0("percent_tested_", biomarker) := percent_tested,
+#       !!paste0("percent_not_tested_", biomarker) := percent_not_tested
+#     )
+# }
+# 
+# # Apply the function for each biomarker and combine results
+# biomarker_tested_by_race <- biomarkers_of_interest %>%
+#   lapply(function(b) biomarker_check_by_race(new_dat_id, b)) %>%
+#   reduce(full_join, by = "combined_race_ethnicity")
+# 
+# # View the result
+# print(biomarker_tested_by_race)
+```
+```{r}
+# # Assuming your data frame is named 'data' and contains the columns 'patientid', 'marker', and 'combined_race_ethnicity'
+# # List of biomarkers you are interested in
+# biomarkers_of_interest <- c("t(11;14)", "t(14;16)", "t(4;14)", "Amplification 1q21", "Deletion 13q", "Deletion 17p", "Deletion 1p")
+# 
+# # Create a function to check if a biomarker is present
+# biomarker_check_by_race <- function(data, biomarker) {
+#   data %>%
+#     group_by(combined_race_ethnicity) %>%
+#     summarise(
+#       total_patients = n(),
+#       tested = sum(marker == biomarker, na.rm = TRUE)
+#     ) %>%
+#     mutate(
+#       not_tested = total_patients - tested,
+#       percent_tested = (tested / total_patients) * 100,
+#       percent_not_tested = (not_tested / total_patients) * 100
+#     ) %>%
+#     select(combined_race_ethnicity, percent_tested, percent_not_tested) %>%
+#     pivot_longer(cols = starts_with("percent_"),
+#                  names_to = "status",
+#                  values_to = "percentage") %>%
+#     mutate(status = ifelse(status == "percent_tested", "Tested", "Not Tested"),
+#            biomarker = biomarker)
+# }
+# 
+# # Apply the function for each biomarker and combine results
+# biomarker_tested_by_race <- bind_rows(lapply(biomarkers_of_interest, function(b) biomarker_check_by_race(new_dat_id, b)))
+# 
+# # Create the stacked bar plot with percentages displayed on top
+# ggplot(biomarker_tested_by_race, aes(x = combined_race_ethnicity, y = percentage, fill = status)) +
+#   geom_bar(stat = "identity", position = "stack") +
+#   geom_text(aes(label = sprintf("%.1f%%", percentage)),
+#             position = position_stack(vjust = 0.5), size = 3) +
+#   facet_wrap(~ biomarker, scales = "free_y") +
+#   labs(x = "Race/Ethnicity", y = "Percentage", fill = "Status") +
+#   theme_minimal() +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+```{r}
+# biomarkers <- c("Deletion 13","Deletion 17p",
+#                "t(11;14)", "t(14;16)","t(14;20)","t(4;14)", "t(6;14)", "Trisomy" ) 
+# 
+# new_genetic_test <- genetic_test %>% filter(marker == "Deletion 13"| marker == "Deletion 17p" | 
+#                                               marker == "t(11;14)" | marker == "t(14;16)" |
+#                                               marker == "t(14;20)"| marker == "t(4;14)" | 
+#                                               marker == "t(6;14)" | marker == "Trisomy" )
+# 
+# # All people obtained cytogenetic tests (FISH and Karotype)
+# test_record <- dat %>% left_join(new_genetic_test, by = "patientid")
+# test_record <- test_record %>% distinct(patientid, specimencollecteddate) %>% group_by(patientid) %>% filter(specimencollecteddate == max(specimencollecteddate)) 
+# 
+# # create a year of specimen collected date column
+# test_record <- test_record %>% mutate(year =year(specimencollecteddate)) 
+# test_record_summary <- test_record %>% group_by(year) %>% summarise(test_count = n(),
+#                                                                      .groups = 'drop')
+# print(test_record_summary)
+# 
+# diag_dat <- dat %>% mutate(year1 = year(diagnosisdate)) %>%  group_by(year1) %>% summarise(diagnosis_count = n(), .groups = 'drop')
+# 
+# # Merge the frequencies dataframes
+# merged_frequencies <- test_record_summary %>%
+#   left_join(diag_dat, by = c("year" = "year1"))
+# 
+# # Calculate the testing percentages
+# merged_frequencies <- merged_frequencies %>%
+#   mutate(percentage = (test_count / diagnosis_count) * 100)
+# 
+# # View the final data
+# print(merged_frequencies)
+
+```
+
+
+##Cytogenetic risk group categorization process
+1. high risk
+t(14;16), t(14;20); Deletion 17p
+```{r}
+# t(14;16)
+new_dat<- new_dat %>% mutate(`t(14;16)` = ifelse(is.na(`t(14;16)`), 3, `t(14;16)` ))
+new_dat <- new_dat %>% mutate(`t(14;16)` = factor(`t(14;16)`,
+                                            levels = c(1, 
+                                                       2,
+                                                       3),
+                                            labels = c("Positive", 
+                                                       "Negative",
+                                                       "Unknown/Missing"
+                                                       )))
+# t(14;20)
+new_dat<- new_dat %>% mutate(`t(14;20)` = ifelse(is.na(`t(14;20)`), 3, `t(14;20)` ))
+new_dat <- new_dat %>% mutate(`t(14;20)` = factor(`t(14;20)`,
+                                            levels = c(1, 
+                                                       2,
+                                                       3),
+                                            labels = c("Positive", 
+                                                       "Negative",
+                                                       "Unknown/Missing"
+                                                       )))
+# Deletion 17p
+new_dat<- new_dat %>% mutate(`Deletion 17p` = ifelse(is.na(`Deletion 17p`), 3, `Deletion 17p` ))
+new_dat <- new_dat %>% mutate(`Deletion 17p` = factor(`Deletion 17p`,
+                                            levels = c(1, 
+                                                       2,
+                                                       3),
+                                            labels = c("Positive", 
+                                                       "Negative",
+                                                       "Unknown/Missing"
+                                                       )))
+
+```
+
+2. intermediate risk 
+t(4;14), Deletion 13
+```{r}
+# t(4;14)
+new_dat<- new_dat %>% mutate(`t(4;14)` = ifelse(is.na(`t(4;14)`), 3, `t(4;14)` ))
+new_dat <- new_dat %>% mutate(`t(4;14)` = factor(`t(4;14)`,
+                                            levels = c(1, 
+                                                       2,
+                                                       3),
+                                            labels = c("Positive", 
+                                                       "Negative",
+                                                       "Unknown/Missing"
+                                                       )))
+# Deletion 13
+new_dat<- new_dat %>% mutate(`Deletion 13` = ifelse(is.na(`Deletion 13`), 3, `Deletion 13`))
+new_dat <- new_dat %>% mutate(`Deletion 13` = factor(`Deletion 13`,
+                                            levels = c(1,
+                                                       2,
+                                                       3),
+                                            labels = c("Positive",
+                                                       "Negative",
+                                                       "Unknown/Missing"
+                                                       )))
+```
+
+3. standard risk
+t(6;14), t(11;14), Trisomy
+```{r}
+#t(6;14)
+new_dat<- new_dat %>% mutate(`t(6;14)` = ifelse(is.na(`t(6;14)`), 3, `t(6;14)` ))
+new_dat <- new_dat %>% mutate(`t(6;14)` = factor(`t(6;14)`,
+                                            levels = c(1, 
+                                                       2,
+                                                       3),
+                                            labels = c("Positive", 
+                                                       "Negative",
+                                                       "Unknown/Missing"
+                                                       )))
+# t(11;14)
+new_dat<- new_dat %>% mutate(`t(11;14)` = ifelse(is.na(`t(11;14)`), 3, `t(11;14)` ))
+new_dat <- new_dat %>% mutate(`t(11;14)` = factor(`t(11;14)`,
+                                            levels = c(1, 
+                                                       2,
+                                                       3),
+                                            labels = c("Positive", 
+                                                       "Negative",
+                                                       "Unknown/Missing"
+                                                       )))
+# Trisomy
+new_dat<- new_dat %>% mutate(Trisomy = ifelse(is.na(Trisomy), 3, Trisomy ))
+new_dat <- new_dat %>% mutate(Trisomy = factor(Trisomy,
+                                            levels = c(1, 
+                                                       2,
+                                                       3),
+                                            labels = c("Positive", 
+                                                       "Negative",
+                                                       "Unknown/Missing"
+                                                       )))
+
+```
+
+Deltion 13q (not included in cytogenetic risk groups)
+```{r}
+new_dat<- new_dat %>% mutate(`Deletion 13q` = ifelse(is.na(`Deletion 13q`), 3,`Deletion 13q`))
+new_dat <- new_dat %>% mutate(`Deletion 13q` = factor(`Deletion 13q`,
+                                            levels = c(1, 
+                                                       2,
+                                                       3),
+                                            labels = c("Positive", 
+                                                       "Negative",
+                                                       "Unknown/Missing"
+                                                       )))
+new_dat %>% group_by(`Deletion 13q`)%>% summarise(count = n())
+```
+
+Ploidy (not included in cytogenetic risk groups)
+```{r}
+new_dat<- new_dat %>% mutate(Ploidy = ifelse(is.na(Ploidy), 3,Ploidy))
+new_dat <- new_dat %>% mutate(Ploidy = factor(Ploidy,
+                                            levels = c(1, 
+                                                       2,
+                                                       3),
+                                            labels = c("Hyperdiploid", 
+                                                        "Hypodiploid",
+                                                       "Unknown/Missing"
+                                                       )))
+new_dat %>% group_by(Ploidy)  %>% summarise(count = n())
+
+```
+
+Recategorize into risk groups
+```{r}
+
+library(dplyr)
+new_dat <- new_dat %>%
+  mutate(
+    # High risk criteria - if any one of them is positive, then positive 
+    high_risk = case_when(
+     `t(14;16)` == "Positive" |`t(14;20)` == "Positive" | `Deletion 17p` == "Positive" ~ "Positive",
+      `t(14;16)` == "Negative" & `t(14;20)` == "Negative" & `Deletion 17p` == "Negative" ~ "Negative",
+      TRUE ~ NA_character_
+    ),
+   
+    # Intermediate risk criteria
+    intermediate_risk = case_when(
+      `t(4;14)` == "Positive" | `Deletion 13` == "Positive" ~ "Positive",
+      `t(4;14)` == "Negative" & `Deletion 13` == "Negative" ~ "Negative",
+      TRUE ~ NA_character_
+    ),
+   
+    # Standard risk criteria
+    standard_risk = case_when(
+      `t(11;14)` == "Positive" |  `t(6;14)` == "Positive" ~ "Positive",
+       `t(11;14)` == "Negative" &  `t(6;14)` == "Negative" ~ "Negative",
+      TRUE ~ NA_character_
+    ),
+   
+    # No risk or unknown criteria - if all negative, then negative; if all NA, then NA
+    no_risk_unknown = case_when(
+      high_risk == "Negative" & intermediate_risk == "Negative" & standard_risk == "Negative" ~ "Negative",
+      is.na(high_risk) & is.na(intermediate_risk) & is.na(standard_risk) ~ NA_character_,
+      TRUE ~ "unknown"
+    )
+  ) %>%
+  mutate(
+    risk_group = case_when(
+      high_risk == "Positive" ~ "high risk",
+      intermediate_risk == "Positive" & (high_risk == "Negative" | is.na(high_risk)) ~ "intermediate risk",
+      standard_risk == "Positive" & (high_risk == "Negative" | is.na(high_risk)) & (intermediate_risk == "Negative" | is.na(intermediate_risk)) ~ "standard risk",
+      (high_risk == "Negative" | is.na(high_risk)) & (intermediate_risk == "Negative" | is.na(intermediate_risk)) & (standard_risk == "Negative" | is.na(standard_risk)) ~ "No risk/Unknown",
+      TRUE ~ "No Risk/Unknown"
+    )
+  )
+
+# if high risk positive, then high risk (the other two positive does not matter)
+# if intermediate risk positive, and high risk negative/unknown, then intermediate risk (standard risk positive does not matter)
+# if standard risk positive, and high risk negative/unknown and intermediate risk negative/unknown, then standard risk
+# if all negative/unknown, No risk/unknown
+
+# View the updated dataframe
+head(new_dat)
+```
+
+```{r}
+# check the number of observations in each cytogenetic risk group
+table_risk <- new_dat %>% group_by(risk_group) %>% summarise(count=n());table_risk
+```
+
+#Select/clean the relevant variables first
+```{r}
+new_dat <- new_dat %>% select(-issstagesource, -mproteinnotdocumented, 
+                               -lightchainnotdocumented,
+                              -ecogsource, -ecogvalue, -ecogdate, -enhancedcohort, -selection_60,
+                              -practiceid, -primaryphysicianid,-high_risk,-intermediate_risk,-standard_risk
+                              )
+```
+
+# Lab data - biomarkers - CHECK THE STEPS
+```{r}
+# filtering biomarkers of interest from lab
+lab2 <- lab %>% filter(labcomponent == "Creatinine, serum" | labcomponent == "Calcium, serum" )
+
+# check NA values in testresults vs. testresultscleaned
+sum(is.na(lab2$testresult))
+sum(is.na(lab2$testresultcleaned))
+
+lab2 <- lab2 %>% filter(!is.na(testunitscleaned))
+
+# convert units - making things consistent
+lab2 <- lab2 %>% mutate(testresultcleaned == ifelse(testunitscleaned == "mmol/L",as.numeric(testresultcleaned)*4,testresultcleaned))
+
+
+# if serum calcium >11 mg/dL - Yes (1), other Negative(2), NA(3)
+lab2 <- lab2 %>% mutate(serum_calcium= case_when(
+    labcomponent == "Calcium, serum" & testresultcleaned >11  ~ 1,
+    labcomponent == "Calcium, serum" & testresultcleaned <= 11  ~ 2,
+    TRUE ~ 3
+))
+
+# if serum creatinine > 2mg/dL - Positive, other Negative
+lab2 <- lab2 %>% mutate(serum_creatinine = case_when(
+    labcomponent == "Creatinine, serum" & testresultcleaned >2  ~ 1,
+    labcomponent == "Creatinine, serum" & testresultcleaned <= 2  ~ 2,
+    TRUE ~ 3
+))
+
+# lowerst number - if positive
+# results date - most recent (if there are ties)
+
+# convert data fromat to long
+long_dat <- lab2 %>%  pivot_longer(cols = c(serum_calcium,serum_creatinine), 
+                                   names_to = "marker_calcium_creatinie",
+                                   values_to = "marker_calcium_creatinie_result")
+                                   
+                                   
+                                   
+lab2 <- long_dat %>% group_by(patientid, marker_calcium_creatinie) %>% filter(marker_calcium_creatinie_result == min(marker_calcium_creatinie_result)
+) %>% filter(testdate == max(testdate)) %>% slice(1) %>% ungroup()
+
+#serum calcium
+lab2_1 <- lab2 %>% filter(marker_calcium_creatinie =="serum_calcium") %>% rename( test_date_calcium = testdate) %>% rename(marker_calcium_result = marker_calcium_creatinie_result)
+new_dat  <- new_dat %>% left_join(select(lab2_1, patientid, marker_calcium_result,test_date_calcium ), by = "patientid") %>% 
+  mutate(marker_calcium_result = ifelse(test_date_calcium > linestartdate, NA, marker_calcium_result))
+
+#serum creatinine
+lab2_2 <- lab2 %>% filter(marker_calcium_creatinie =="serum_creatinine") %>% rename( test_date_creatinie = testdate) %>% rename(marker_creatinie_result = marker_calcium_creatinie_result)
+
+new_dat  <- new_dat %>% left_join(select(lab2_2, patientid,marker_creatinie_result,test_date_creatinie ), by = "patientid") %>% 
+  mutate(marker_creatinie_result = ifelse(test_date_creatinie > linestartdate, NA,marker_creatinie_result))
+
+```
+
+```{r}
+#install.packages("gtsummary")
+library(gtsummary)
+#install.packages("flextable")
+library(flextable)
+library(tableone)
+new_dat<- new_dat %>% mutate(marker_calcium_result = ifelse(is.na(marker_calcium_result), 3, marker_calcium_result))
+new_dat<- new_dat %>% mutate(marker_creatinie_result= ifelse(is.na(marker_creatinie_result), 3, marker_creatinie_result ))
+
+
+table_calcium <- new_dat %>% 
+  select(marker_calcium_result, combined_race_ethnicity) %>%
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+    digits = list(all_categorical() ~ c(0, 1))) %>%
+  add_p(
+    test = list(all_categorical() ~ "chisq.test"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+table_calcium
+
+table_creatinie <- new_dat %>% 
+  select(marker_creatinie_result, combined_race_ethnicity) %>%
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+    digits = list(all_categorical() ~ c(0, 1))) %>%
+  add_p(
+    test = list(all_categorical() ~ "chisq.test"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+table_creatinie
+```
+
+##hemoglobin
+```{r}
+extracted_labs_hemo <- extracted_labs %>% filter(testbasename == "hemoglobin")
+# set numeric
+extracted_labs_hemo$testresultcleaned <- as.numeric(extracted_labs_hemo$testresultcleaned)
+# remove tests with NA unit
+extracted_labs_hemo %>% filter(!is.na(testunitscleaned))
+
+extracted_labs_hemo <- extracted_labs_hemo %>% mutate(hemoglobin = case_when(
+    testbasename == "hemoglobin" & testresultcleaned <= 10  ~ 1,
+    testbasename == "hemoglobin" & testresultcleaned > 10  ~ 2,
+    TRUE ~ 3
+))
+
+extracted_labs_hemo <- extracted_labs_hemo  %>% group_by(patientid) %>% filter(
+  hemoglobin == min(hemoglobin)
+) %>% filter(labdate == max(labdate)) %>% slice(1) 
+
+```
+
+```{r}
+new_dat <- new_dat %>% left_join(extracted_labs_hemo, by = "patientid")
+new_dat<- new_dat %>% mutate(hemoglobin = ifelse(is.na(hemoglobin), 3, hemoglobin)) %>% 
+  mutate(hemoglobin = ifelse(labdate > linestartdate, NA,hemoglobin)) %>% mutate(hemoglobin = ifelse(is.na(hemoglobin), 3, hemoglobin))
+
+new_dat <- new_dat %>% select(-labdatesource,-testbasename,-testunits,
+                              -testunitscleaned,-testresult,-testresultcleaned,
+                              -minnorm,-maxnorm,-minnormcleaned,-maxnormcleaned,
+                              -labsource)
+```
+
+```{r}
+table_hemo <- new_dat %>% 
+  select(hemoglobin, combined_race_ethnicity) %>%
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+    digits = list(all_categorical() ~ c(0, 1))) %>%
+  add_p(
+    test = list(all_categorical() ~ "chisq.test"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+table_hemo
+
+```
+
+##biomarkers: tested vs. never tested patients - any trends?
+```{r}
+# #hemoglobin
+# tested_data <- new_dat %>% mutate(test_status_hemo = case_when(
+#   hemoglobin == 1 ~ "tested",
+#   hemoglobin == 2 ~ "tested",
+#   hemoglobin == 3 ~ "never tested/unknown"
+# ))
+# 
+# 
+# library(ggplot2)
+# library(dplyr)
+# 
+# # hemoglobin
+# proportions <- tested_data %>%
+#   group_by(combined_race_ethnicity, test_status_hemo) %>%
+#   summarise(count = n()) %>%
+#   mutate(proportion = count / sum(count));proportions
+# # Visualize with a bar plot
+# ggplot(proportions, aes(x = combined_race_ethnicity, y = proportion, fill = test_status_hemo)) +
+#   geom_bar(stat = "identity", position = "fill") +
+#   labs(title = "Proportion of Hemoglobin Levels Across Racial Groups", x = "Race/Ethnicity", y = "Proportion") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# 
+# #creatinine
+# tested_data <- tested_data %>% mutate(test_status_creatinine = case_when(
+#   marker_creatinie_result == 1 ~ "tested",
+#   marker_creatinie_result == 2 ~ "tested",
+#   marker_creatinie_result == 3 ~ "never tested/unknown"
+# ))
+# 
+# # Calculate proportions
+# proportions <- tested_data %>%
+#   group_by(combined_race_ethnicity, test_status_creatinine) %>%
+#   summarise(count = n()) %>%
+#   mutate(proportion = count / sum(count));proportions
+# # Visualize with a bar plot
+# ggplot(proportions, aes(x = combined_race_ethnicity, y = proportion, fill = test_status_creatinine)) +
+#   geom_bar(stat = "identity", position = "fill") +
+#   labs(title = "Proportion of Serum Creatinine Across Racial Groups", x = "Race/Ethnicity", y = "Proportion") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# 
+# 
+# #calcium
+# tested_data <- tested_data %>% mutate(test_status_calcium = case_when(
+#   marker_calcium_result == 1 ~ "tested",
+#   marker_calcium_result == 2 ~ "tested",
+#   marker_calcium_result == 3 ~ "never tested/unknown"
+# ))
+# 
+# # Calculate proportions
+# proportions <- tested_data %>%
+#   group_by(combined_race_ethnicity, test_status_calcium) %>%
+#   summarise(count = n()) %>%
+#   mutate(proportion = count / sum(count));proportions
+# # Visualize with a bar plot
+# ggplot(proportions, aes(x = combined_race_ethnicity, y = proportion, fill = test_status_calcium)) +
+#   geom_bar(stat = "identity", position = "fill") +
+#   labs(title = "Proportion of Serum Calcium Across Racial Groups", x = "Race/Ethnicity", y = "Proportion") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+```{r}
+# # List of biomarkers
+# biomarkers <- c("Deletion 13","Deletion 17p",
+#                "t(11;14)", "t(14;16)","t(14;20)","t(4;14)", "t(6;14)", "Trisomy" ) 
+# 
+# 
+# #del13
+# tested_data <- tested_data %>% mutate(test_status_del13 = case_when(
+#   `Deletion 13` == "Positive" ~ "tested",
+#   `Deletion 13` == "Negative" ~ "tested",
+#   `Deletion 13` == "Unknown/Missing" ~ "never tested/unknown"
+# ))
+# 
+# # Calculate proportions
+# proportions <- tested_data %>%
+#   group_by(combined_race_ethnicity, test_status_del13) %>%
+#   summarise(count = n()) %>%
+#   mutate(proportion = count / sum(count));proportions
+# # Visualize with a bar plot
+# ggplot(proportions, aes(x = combined_race_ethnicity, y = proportion, fill =  test_status_del13)) +
+#   geom_bar(stat = "identity", position = "fill") +  
+#   geom_bar(stat = "identity", position = "fill") + geom_text(aes(label=paste0(round(proportion*100,1),"%")),position = position_stack(
+#       vjust=0.5),size=3,color="black"
+#     ) +
+#   labs(title = "Proportion of Deletion 13 Across Racial Groups", x = "Race/Ethnicity", y = "Proportion") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# 
+# #del17p
+# tested_data <- tested_data %>% mutate(test_status_del17p = case_when(
+#   `Deletion 17p` == "Positive" ~ "tested",
+#   `Deletion 17p` == "Negative" ~ "tested",
+#   `Deletion 17p` == "Unknown/Missing" ~ "never tested/unknown"
+# ))
+# 
+# # Calculate proportions
+# proportions <- tested_data %>%
+#   group_by(combined_race_ethnicity, test_status_del17p) %>%
+#   summarise(count = n()) %>%
+#   mutate(proportion = count / sum(count));proportions
+# # Visualize with a bar plot
+# ggplot(proportions, aes(x = combined_race_ethnicity, y = proportion, fill =  test_status_del17p)) +
+#   geom_bar(stat = "identity", position = "fill") +
+#   geom_bar(stat = "identity", position = "fill") + geom_text(aes(label=paste0(round(proportion*100,1),"%")),position = position_stack(
+#       vjust=0.5),size=3,color="black"
+#     )+
+#   labs(title = "Proportion of Deletion 17p Across Racial Groups", x = "Race/Ethnicity", y = "Proportion") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# 
+# #t(11;14)
+# tested_data <- tested_data %>% mutate(test_status_t_11_14 = case_when(
+#   `t(11;14)` == "Positive" ~ "tested",
+#   `t(11;14)` == "Negative" ~ "tested",
+#   `t(11;14)` == "Unknown/Missing" ~ "never tested/unknown"
+# ))
+# 
+# # Calculate proportions
+# proportions <- tested_data %>%
+#   group_by(combined_race_ethnicity, test_status_t_11_14) %>%
+#   summarise(count = n()) %>%
+#   mutate(proportion = count / sum(count));proportions
+# # Visualize with a bar plot
+# ggplot(proportions, aes(x = combined_race_ethnicity, y = proportion, fill =  test_status_t_11_14)) +
+#   geom_bar(stat = "identity", position = "fill") + geom_text(aes(label=paste0(round(proportion*100,1),"%")),position = position_stack(
+#       vjust=0.5),size=3,color="black"
+#     )+
+#     scale_y_continuous(labels = scales::percent) +
+#   labs(title = "Proportion of t(11;14) Across Racial Groups", x = "Race/Ethnicity", y = "Proportion") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# 
+# #t(6;14)
+# tested_data <- tested_data %>% mutate(test_status_t_6_14 = case_when(
+#   `t(6;14)` == "Positive" ~ "tested",
+#   `t(6;14)` == "Negative" ~ "tested",
+#   `t(6;14)` == "Unknown/Missing" ~ "never tested/unknown"
+# ))
+# # Calculate proportions
+# proportions <- tested_data %>%
+#   group_by(combined_race_ethnicity, test_status_t_6_14) %>%
+#   summarise(count = n()) %>%
+#   mutate(proportion = count / sum(count));proportions
+# # Visualize with a bar plot
+# ggplot(proportions, aes(x = combined_race_ethnicity, y = proportion, fill =  test_status_t_6_14)) +
+#   geom_bar(stat = "identity", position = "fill") + geom_text(aes(label=paste0(round(proportion*100,1),"%")),position = position_stack(
+#       vjust=0.5),size=3,color="black"
+#     )+
+#     scale_y_continuous(labels = scales::percent) +
+#   labs(title = "Proportion of t(6;14) Across Racial Groups", x = "Race/Ethnicity", y = "Proportion") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# 
+# 
+# #test_status_trisomy
+# tested_data <- tested_data %>% mutate(test_status_trisomy = case_when(
+#   Trisomy == "Positive" ~ "tested",
+#   Trisomy == "Negative" ~ "tested",
+#   Trisomy == "Unknown/Missing" ~ "never tested/unknown"
+# ))
+# # Calculate proportions
+# proportions <- tested_data %>%
+#   group_by(combined_race_ethnicity, test_status_trisomy) %>%
+#   summarise(count = n()) %>%
+#   mutate(proportion = count / sum(count));proportions
+# # Visualize with a bar plot
+# ggplot(proportions, aes(x = combined_race_ethnicity, y = proportion, fill =  test_status_trisomy)) +
+#   geom_bar(stat = "identity", position = "fill") + geom_text(aes(label=paste0(round(proportion*100,1),"%")),position = position_stack(
+#       vjust=0.5),size=3,color="black"
+#     )+
+#     scale_y_continuous(labels = scales::percent) +
+#   labs(title = "Proportion of Trisomy Across Racial Groups", x = "Race/Ethnicity", y = "Proportion") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# 
+# 
+# #t(4;14)
+# tested_data <- tested_data %>% mutate(test_status_t_4_14 = case_when(
+#   `t(4;14)` == "Positive" ~ "tested",
+#   `t(4;14)` == "Negative" ~ "tested",
+#   `t(4;14)` == "Unknown/Missing" ~ "never tested/unknown"
+# ))
+# # Calculate proportions
+# proportions <- tested_data %>%
+#   group_by(combined_race_ethnicity, test_status_t_4_14) %>%
+#   summarise(count = n()) %>%
+#   mutate(proportion = count / sum(count));proportions
+# # Visualize with a bar plot
+# ggplot(proportions, aes(x = combined_race_ethnicity, y = proportion, fill =  test_status_t_4_14)) +
+#   geom_bar(stat = "identity", position = "fill") + geom_text(aes(label=paste0(round(proportion*100,1),"%")),position = position_stack(
+#       vjust=0.5),size=3,color="black"
+#     )+
+#     scale_y_continuous(labels = scales::percent) +
+#   labs(title = "Proportion of t(4;14) Across Racial Groups", x = "Race/Ethnicity", y = "Proportion") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# 
+# #t(14;16)
+# tested_data <- tested_data %>% mutate(test_status_t_14_16 = case_when(
+#   `t(14;16)` == "Positive" ~ "tested",
+#   `t(14;16)` == "Negative" ~ "tested",
+#   `t(14;16)` == "Unknown/Missing" ~ "never tested/unknown"
+# ))
+# # Calculate proportions
+# proportions <- tested_data %>%
+#   group_by(combined_race_ethnicity, test_status_t_14_16) %>%
+#   summarise(count = n()) %>%
+#   mutate(proportion = count / sum(count));proportions
+# # Visualize with a bar plot
+# ggplot(proportions, aes(x = combined_race_ethnicity, y = proportion, fill =  test_status_t_14_16)) +
+#   geom_bar(stat = "identity", position = "fill") + geom_text(aes(label=paste0(round(proportion*100,1),"%")),position = position_stack(
+#       vjust=0.5),size=3,color="black"
+#     )+
+#     scale_y_continuous(labels = scales::percent) +
+#   labs(title = "Proportion of t(14;16) Across Racial Groups", x = "Race/Ethnicity", y = "Proportion") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# 
+# 
+# #t(14;20)
+# tested_data <- tested_data %>% mutate(test_status_t_14_20 = case_when(
+#   `t(14;20)` == "Positive" ~ "tested",
+#   `t(14;20)` == "Negative" ~ "tested",
+#   `t(14;20)` == "Unknown/Missing" ~ "never tested/unknown"
+# ))
+# # Calculate proportions
+# proportions <- tested_data %>%
+#   group_by(combined_race_ethnicity, test_status_t_14_20) %>%
+#   summarise(count = n()) %>%
+#   mutate(proportion = count / sum(count));proportions
+# # Visualize with a bar plot
+# ggplot(proportions, aes(x = combined_race_ethnicity, y = proportion, fill =  test_status_t_14_20)) +
+#   geom_bar(stat = "identity", position = "fill") + geom_text(aes(label=paste0(round(proportion*100,1),"%")),position = position_stack(
+#       vjust=0.5),size=3,color="black"
+#     )+
+#     scale_y_continuous(labels = scales::percent) +
+#   labs(title = "Proportion of t(14;20) Across Racial Groups", x = "Race/Ethnicity", y = "Proportion") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# 
+# 
+#  
+
+```
+
+# Demographics 
+##Baseline Characteristics
+```{r}
+#install.packages("tableoone")
+library("tableone")
+```
+
+##Age at 1st treatment (mean, sd)
+```{r}
+# mean(s)
+table_age_mean <- new_dat %>% 
+  select(age_at_1L, combined_race_ethnicity) %>%
+  rename(`Age at 1st Treatment` = age_at_1L) %>% 
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_continuous()  ~ "{mean} ({sd})"),
+    digits = list(all_continuous()  ~ c(2, 2))
+  ) %>%
+  add_p(
+    test = list(all_continuous()  ~ "aov"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+
+table_age_mean 
+# another way to perform this
+# vars <- c("age_at_1L")
+# 
+# table1 <- CreateTableOne(vars = vars, strata = "combined_race_ethnicity", data = dat)
+# 
+# view_table1 <- print(table1, quote = FALSE, noSpaces = TRUE)
+# summary(table1)
+
+age_anova <- aov(age_at_1L ~ combined_race_ethnicity, data = dat)
+summary(age_anova)
+
+tukey_result <- TukeyHSD(age_anova)
+print(tukey_result)
+```
+##Age at 1st treatment (median, range)
+```{r}
+# median (range)
+table_age_median <- new_dat %>% 
+  select(age_at_1L, combined_race_ethnicity) %>%
+  rename(`Age at 1st Treatment` = age_at_1L) %>%
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_continuous()  ~ "{median} ({min} - {max})"),
+    digits = list(all_continuous()  ~ c(2, 2))) %>%
+  add_p(
+    test = list(all_continuous()  ~ "aov"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+table_age_median
+
+```
+##Birth sex
+```{r}
+new_dat <- new_dat %>% rename(gender=birthsex)
+table_gender <- new_dat %>% 
+  select(gender, combined_race_ethnicity) %>%
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+    digits = list(all_categorical() ~ c(0, 1))) %>%
+  add_p(
+    test = list(all_categorical() ~ "chisq.test"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+table_gender
+
+# Another method to get the results 
+contingency_table <- table(new_dat$gender, new_dat$combined_race_ethnicity)
+chi_squared_result <- chisq.test(contingency_table)
+print(chi_squared_result)
+
+# birth sex by race/ethnicity groups
+contingency_table <- table(new_dat$gender, new_dat$combined_race_ethnicity)
+
+```
+##ECOG at 1st treatment
+```{r}
+# new_dat <- new_dat %>% mutate(combined_ecog = factor(combined_ecog,
+#                                             levels = c("0-1", 
+#                                                        "≥2",
+#                                                        "Unknown"),
+#                                             labels = c("0-1", 
+#                                                        "≥2",
+#                                                        "Unknown"
+#                                                        )))
+
+table_ecog <- new_dat %>% 
+  select(combined_ecog, combined_race_ethnicity) %>%
+  rename(`Ecog at 1st Treatment` = combined_ecog) %>% 
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+    digits = list(all_categorical() ~ c(0, 1))) %>%
+  add_p(
+    test = list(all_categorical() ~ "chisq.test"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+table_ecog 
+```
+##(Group) stage at initial diagnosis (%) 
+```{r}
+table_stage <-  new_dat %>% 
+  select(issstage, combined_race_ethnicity) %>%
+  rename(`Stage at Initial Diagnosis (ISS stage)` = issstage) %>% 
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+    digits = list(all_categorical() ~ c(0, 1))) %>%
+  add_p(
+    test = list(all_categorical() ~ "chisq.test"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+table_stage
+```
+##transplant type + asct
+```{r}
+# NOT APPLICABLE - size of each category differs too much
+# table_transplanttype <- new_dat %>% 
+#   select(transplant_type_2, combined_race_ethnicity) %>%
+#   rename(`Tranplant Type` =transplant_type_2 )%>%
+#   tbl_summary(
+#     by = combined_race_ethnicity,
+#     statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+#     digits = list(all_categorical() ~ c(0, 1))) %>%
+#   add_p(
+#     test = list(all_categorical() ~ function(data, variable, by, ...) {
+#       chisq.test(table(data[[variable]], data[[by]], simulated.p.value = TRUE, B=2000))
+#     }),
+#     pvalue_fun = function(x) style_pvalue(x, digits = 3)
+#   )
+# table_transplanttype
+
+# Convert transplant types to a binary variable 
+new_dat<- new_dat %>% mutate(asct = ifelse(transplant_type_2 %in% c("Autologous", "Allogeneic,Autologous	"), 
+                                    "Yes", "No/Unknown"))
+
+new_dat<- new_dat %>% mutate(asct = factor(asct,
+                                            levels = c("Yes", 
+                                                       "No/Unknown"),
+                                            labels = c("Yes", 
+                                                         "No/Unknown"
+                                                       )))
+table_asct <- new_dat %>% 
+  select(asct, combined_race_ethnicity) %>%
+  rename(`Autologous Stem Cell Transplant (ASCT)` = asct) %>% 
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+    digits = list(all_categorical() ~ c(0, 1))) %>%
+  add_p(
+    test = list(all_categorical() ~ "chisq.test"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+table_asct
+```
+##Year of diagnosis
+```{r}
+library(lubridate)
+new_dat<-new_dat %>% mutate(yearofdiagnosis = year(diagnosisdate))
+new_dat<- new_dat%>% mutate(year_diag_group = case_when(
+  yearofdiagnosis >= 2010 & yearofdiagnosis <= 2014 ~ "2010-2014",
+  yearofdiagnosis >= 2015 & yearofdiagnosis <= 2019 ~ "2015-2019",
+   yearofdiagnosis >= 2020 & yearofdiagnosis <= 2024 ~ "2020-2024",
+  TRUE ~ "Other"
+))
+
+table_year <- new_dat %>% 
+  select(year_diag_group, combined_race_ethnicity) %>%
+  rename(`Year Group of Diagnosis` = year_diag_group)%>%
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+    digits = list(all_categorical() ~ c(0, 1))) %>%
+  add_p(
+    test = list(all_categorical() ~ "chisq.test"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+table_year
+
+```
+
+######################################################################### RESTART FROM HERE
+```{r}
+lineoftherapy_2 <- lineoftherapy %>% rename(linestartdate=startdate)
+datt <- new_dat %>% left_join(lineoftherapy_2, by = c("patientid", "linenumber",  "linestartdate"))
+```
+
+#START to use datt here
+## ALL TREATMENT INFO CAN BE SKIPPED FOR NOW, CHECK THEM LATER
+##Treatment - Immunomodulatory Drugs (IMiDs) - Yes/No
+```{r}
+# # IMiDs
+# IMIDS <- c("Thalidomide", "Lenalidomide", "Pomalidomide") 
+# for (i in seq_along(IMIDS)){
+#   pattern <- paste(IMIDS[[i]], collapse = "|")
+#   column_name <- paste("Set", i, sep = "_")
+#   datt[[column_name]] <- as.numeric(grepl(pattern, datt$linename))
+# }
+# 
+# datt$imids <- as.numeric(rowSums(datt[ , grep("Set_", colnames(datt))])>0)
+# a <- datt %>% group_by(imids) %>% summarise(count=n())
+```
+
+```{r}
+# datt <- datt %>% mutate(imids = factor(imids,
+#                                             levels = c(1, 
+#                                                        0)))
+# 
+# # ,
+# #                                             labels = c("Yes", 
+# #                                                        "No/Unknown"
+# #                                                        )
+# table_imids <- datt %>% 
+#   select(imids, combined_race_ethnicity) %>%
+#   rename(IMiDs = imids) %>% 
+#   tbl_summary(
+#     by = combined_race_ethnicity,
+#     statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+#     digits = list(all_categorical() ~ c(0, 1))) %>%
+#   add_p(
+#     test = list(all_categorical() ~ "chisq.test"),
+#     pvalue_fun = function(x) style_pvalue(x, digits = 3)
+#   )
+# table_imids
+```
+
+###Treatment - chemotherapy
+```{r}
+# tradition <- c("Doxorubicin", "Melphalan flufenamide", 
+#                "Melphalan", "Etoposide", "Cisplatin", "Bendamustine", 
+#                "Doxorubicin Pegylated Liposomal", "Doxorubicin Hydrochloride", "Doxorubicin Pegylated Liposomal",
+#                "Cyclophosphamide")
+# for (i in seq_along(tradition)){
+#   pattern <- paste(tradition[[i]], collapse = "|")
+#   column_name <- paste("Set2", i, sep = "_")
+#   datt[[column_name]] <- as.numeric(grepl(pattern, datt$linename))
+# }
+# 
+# datt$traditionchemo <- as.numeric(rowSums(datt[ , grep("Set2_", colnames(datt))])>0)
+# b <- datt %>% group_by(traditionchemo) %>% summarise(count=n())
+# 
+# # regimen_2 <- regimen %>% filter(drugname %in% tradition) %>%
+# #   mutate(
+# #   chemo = ifelse(drugname %in% tradition, 1,0)
+# # )
+# # 
+# # regimen_cleaned <- regimen %>% distinct(patientid, drugname, .keep_all = TRUE)
+
+```
+
+```{r}
+# datt <- datt %>% mutate(traditionchemo = factor(traditionchemo,
+#                                             levels = c(1, 
+#                                                        0)))
+# 
+# table_traditionchemo <- datt %>% 
+#   select(traditionchemo, combined_race_ethnicity) %>%
+#   rename(`Traditional Chemotherapy` = traditionchemo)%>%
+#   tbl_summary(
+#     by = combined_race_ethnicity,
+#     statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+#     digits = list(all_categorical() ~ c(0, 1))) %>%
+#   add_p(
+#     test = list(all_categorical() ~ "chisq.test"),
+#     pvalue_fun = function(x) style_pvalue(x, digits = 3)
+#   )
+# table_traditionchemo
+# ```
+# 
+# ###Treatment - Proteasome Inhibitors (PIs) - Yes/No
+# ```{r}
+# PIS_1 <- c("Bortezomib" , "Carfilzomib", "Ixazomib")
+# for (i in seq_along(PIS_1)){
+#   pattern <- paste(PIS_1[[i]], collapse = "|")
+#   column_name <- paste("Set3", i, sep = "_")
+#   datt[[column_name]] <- as.numeric(grepl(pattern, datt$linename))
+# }
+# 
+# datt$pis <- as.numeric(rowSums(datt[ , grep("Set3_", colnames(datt))])>0)
+# c <- datt %>% group_by(pis) %>% summarise(count=n())
+# 
+# # regimen_1 <- regimen %>% filter(drugname %in% PIS_1) %>%
+# #   mutate(
+# #   PIS_1 = ifelse(drugname %in% PIS_1, 1,0)
+# # )
+# # 
+# # PIS_2 <- c("ixazomib")
+# # orals_2 <- orals %>% filter(drugname %in% PIS_2) %>%
+# #   mutate(
+# #   PIS_2 = ifelse(drugname %in% PIS_2, 1,0)
+# # )
+```
+
+```{r}
+# datt <- datt %>% mutate(pis = factor(pis,
+#                                             levels = c(1, 
+#                                                        0)))
+# 
+# table_pis <- datt %>% 
+#   select(pis, combined_race_ethnicity) %>%
+#   rename(`PIs` = pis) %>% 
+#   tbl_summary(
+#     by = combined_race_ethnicity,
+#     statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+#     digits = list(all_categorical() ~ c(0, 1))) %>%
+#   add_p(
+#     test = list(all_categorical() ~ "chisq.test"),
+#     pvalue_fun = function(x) style_pvalue(x, digits = 3)
+#   )
+# table_pis
+```
+
+###Treatment - steroid
+```{r}
+# steriods <- c("Dexamethasone" , "Prednisone")
+# for (i in seq_along(steriods)){
+#   pattern <- paste(steriods[[i]], collapse = "|")
+#   column_name <- paste("Set4", i, sep = "_")
+#   datt[[column_name]] <- as.numeric(grepl(pattern, datt$linename))
+# }
+# 
+# datt$steriods <- as.numeric(rowSums(datt[ , grep("Set4_", colnames(datt))])>0)
+# c <- datt %>% group_by(steriods) %>% summarise(count=n())
+
+```
+
+```{r}
+# datt <- datt %>% mutate(steriods = factor(steriods,
+#                                             levels = c(1, 
+#                                                        0)))
+# 
+# table_steriods <- datt %>% 
+#   select(steriods, combined_race_ethnicity) %>%
+#   rename(`steriods` = steriods) %>% 
+#   tbl_summary(
+#     by = combined_race_ethnicity,
+#     statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+#     digits = list(all_categorical() ~ c(0, 1))) %>%
+#   add_p(
+#     test = list(all_categorical() ~ "chisq.test"),
+#     pvalue_fun = function(x) style_pvalue(x, digits = 3)
+#   )
+# table_steriods
+```
+
+###Treatment - monoclonal antibody
+```{r}
+# mono <- c("Daratumumab" ,"Daratumumab/Hyaluronidase-Fihj", "Elotuzumab",
+#           "Isatuximab-Irfc")
+# for (i in seq_along(mono)){
+#   pattern <- paste(mono[[i]], collapse = "|")
+#   column_name <- paste("Set5", i, sep = "_")
+#   datt[[column_name]] <- as.numeric(grepl(pattern, datt$linename))
+# }
+# 
+# datt$mono<- as.numeric(rowSums(datt[ , grep("Set5_", colnames(datt))])>0)
+# c <- datt %>% group_by(mono) %>% summarise(count=n())
+
+```
+
+```{r}
+# datt <- datt %>% mutate(mono = factor(mono,
+#                                             levels = c(1, 
+#                                                        0)))
+# 
+# table_mono <- datt %>% 
+#   select(mono, combined_race_ethnicity) %>%
+#   rename(mono = mono) %>% 
+#   tbl_summary(
+#     by = combined_race_ethnicity,
+#     statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+#     digits = list(all_categorical() ~ c(0, 1))) %>%
+#   add_p(
+#     test = list(all_categorical() ~ "chisq.test"),
+#     pvalue_fun = function(x) style_pvalue(x, digits = 3)
+#   )
+# table_mono
+```
+###Treatment - other regimen
+
+```{r}
+
+# # Create the "other regimen" column
+# datt <- datt %>%
+#   rowwise() %>%
+#   mutate(other_regimen = ifelse(sum(c_across(starts_with("Set"))) == 0, 1, 0))
+# 
+# datt$other_regimen <- as.factor(datt$other_regimen)
+# 
+# # View the updated dataframe
+# print(datt)
+# 
+# table_other <- datt %>% 
+#   select(other_regimen, combined_race_ethnicity) %>%
+#   tbl_summary(
+#     by = combined_race_ethnicity,
+#     statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+#     digits = list(all_categorical() ~ c(0, 1))) %>%
+#   add_p(
+#     test = list(all_categorical() ~ "chisq.test"),
+#     pvalue_fun = function(x) style_pvalue(x, digits = 3)
+#   )
+# table_other
+```
+###Create combination of treatments
+```{r}
+# # List of treatment columns
+# treatment_columns <- c("imids", "traditionchemo", "pis", "steriods", "mono","other_regimen")
+# 
+# # Define a function to assign the treatment combination
+# assign_treatment_combination <- function(row) {
+#   treatments <- c()
+#  
+#   # Check each treatment column
+#   for (treatment in treatment_columns) {
+#     if (row[treatment] == 1) {
+#       treatments <- c(treatments, treatment)
+#     }
+#   }
+#  
+#   # Combine the treatments into a single string
+#   if (length(treatments) == 0) {
+#     return("No treatment")
+#   } else {
+#     return(paste(treatments, collapse = "+"))
+#   }
+# }
+# 
+# # Apply the function to each row of the dataframe
+# datt$treatment_combination <- apply(datt[treatment_columns], 1, assign_treatment_combination)
+# 
+# ####################################################################################
+# # Assuming your dataframe is named datt and has the column 'treatment_combination'
+# 
+# # Function to sort and standardize treatment combinations
+# standardize_combination <- function(combination) {
+#   treatments <- unlist(strsplit(combination, "\\+"))
+#   sorted_treatments <- sort(treatments)
+#   return(paste(sorted_treatments, collapse = "+"))
+# }
+# 
+# # Apply the function to each treatment combination
+# datt$treatment_combination_standardized <- sapply(datt$treatment_combination, standardize_combination)
+# 
+# # Verify the unique combinations
+# unique(datt$treatment_combination_standardized)
+# 
+# #####################################################################################
+# # Install ggplot2 package if not already installed
+# # install.packages("ggplot2")
+# 
+# # Load ggplot2 package
+# library(ggplot2)
+# 
+# # Assuming your dataframe is named df and has columns: 'year' and 'treatment_combination'
+# 
+# datt$yearofdiagnosis <- year(datt$diagnosisdate)
+# # Create the stacked bar plot
+# stacked_bar_regimen <- ggplot(datt, aes(x = factor(yearofdiagnosis), fill = treatment_combination_standardized)) +
+#   geom_bar(position = "fill") + 
+#   scale_y_continuous(labels = scales::percent) +
+#   labs(
+#     x = "Year of diagnosis",
+#     y = "1L MM prescription proportion (%)",
+#     fill = ""
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     axis.text.x = element_text(angle = 45, hjust = 1)
+#   )
+# 
+# stacked_bar_regimen
+# 
+# summary_df <- datt %>%
+#   group_by(yearofdiagnosis, treatment_combination_standardized) %>%
+#   summarise(count = n()) %>%
+#   mutate(percentage = count / sum(count) * 100) %>%
+#   ungroup()
+# 
+# print(summary_df)
+# 
+# largest_treatments_combo <- summary_df %>%
+#   group_by(yearofdiagnosis) %>%
+#   slice_max(order_by = percentage, n = 1, with_ties = FALSE) %>%
+#   ungroup() %>% group_by(yearofdiagnosis)
+# 
+# print(largest_treatments_combo)
+```
+
+```{r}
+# # Create a summary dataframe with counts and percentages for each regimen type by year and racial group
+# summary_df <- datt %>%
+#   group_by(yearofdiagnosis, combined_race_ethnicity, treatment_combination_standardized) %>%
+#   summarise(count = n()) %>%
+#   mutate(percentage = count / sum(count) * 100) %>%
+#   ungroup()
+# 
+# print(summary_df)
+# 
+# 
+# largest_treatments_combo <- summary_df %>%
+#   group_by(yearofdiagnosis, combined_race_ethnicity) %>%
+#   slice_max(order_by = percentage, n = 1, with_ties = FALSE) %>%
+#   ungroup() %>% group_by(yearofdiagnosis)
+# 
+# print(largest_treatments_combo)
+# 
+# largest_treatments_combo <- largest_treatments_combo %>%
+#   mutate(treatment_info = paste(treatment_combination_standardized, paste0(round(percentage, 2), "%"), sep = "\n")) %>%
+#   select(yearofdiagnosis, combined_race_ethnicity, treatment_info)
+# 
+# # Spread the data into a wide format
+# table_wide <- largest_treatments_combo %>%
+#   spread(key = combined_race_ethnicity, value = treatment_info)
+# 
+# # Combine rows by year, collapsing non-NA values into a single cell
+# table_wide <- table_wide %>%
+#   group_by(yearofdiagnosis) %>%
+#   summarise(across(everything(), ~paste(na.omit(.), collapse = "\n"))) %>%
+#   ungroup()
+# 
+# #install.packages("kableExtra")
+# library(kableExtra)
+# # Format the table using kable and kableExtra
+# formatted_table <- table_wide %>%
+#   kable("html", escape = FALSE, align = "c", caption = "Treatment Regimen by Racial Groups") %>%
+#   kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = F) %>%
+#   column_spec(1, bold = TRUE) %>%
+#   add_header_above(c(" " = 1, "Treatment Regimen" = 6))
+# 
+# # Display the formatted table
+# save_kable(formatted_table, file = "Treatment by Race.html")
+# 
+# # Identify unique racial groups
+# yearofdiagnosis <- sort(as.factor(unique(datt$yearofdiagnosis)))
+# 
+# # Loop through each racial group and create individual plots
+# for (year in yearofdiagnosis) {
+#   plot_data <- summary_df %>% filter(yearofdiagnosis == year)
+#  
+#   p <- ggplot(plot_data, aes(x = combined_race_ethnicity, y = percentage, fill = treatment_combination_standardized, label = round(percentage, 1))) +
+#     geom_bar(stat = "identity", position = "fill") +
+#     scale_y_continuous(labels = scales::percent) +
+#     labs(
+#       title = paste("Treatment Combinations for", year),
+#       x = "Year of Diagnosis",
+#       y = "1L MM Prescription Proportion (%)",
+#       fill = "Treatment Combination"
+#     ) +
+#     theme_minimal() +
+#     theme(
+#       axis.text.x = element_text(angle = 45, hjust = 1),
+#       legend.position = "top"
+#     )+
+#     theme(
+#       axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+#       axis.text.y = element_text(size = 8),
+#       legend.text = element_text(size = 8),
+#       legend.title = element_text(size = 8),
+#       plot.title = element_text(size = 12),
+#       legend.position = "right"
+#     )
+#  
+#   # Save the plot
+#   ggsave(filename = paste0("treatment_combination_", gsub(" ", "_", year), ".png"), plot = p, width = 10, height = 15)
+#  
+#   # Print the plot
+#   print(p)
+# }
+# 
+
+```
+
+```{r}
+# # Assuming your dataframe is named df and has a column 'treatment_string' and 'year'
+# 
+# # Sample data creation (replace this with actual data loading)
+# # df <- read.csv("your_dataset.csv")
+# 
+# # Load necessary libraries
+# library(dplyr)
+# library(stringr)
+# 
+# # Step 1: Split the treatment strings and count the number of treatments
+# datt <- datt %>%
+#   mutate(
+#     treatment_count = str_count(linename, ",") + 1,
+#     regimen_type = case_when(
+#       treatment_count == 1 ~ "Monotherapy",
+#       treatment_count == 2 ~ "Doublet",
+#       treatment_count == 3 ~ "Triplet",
+#       treatment_count == 4 ~ "Quadruplet",
+#       TRUE ~ "Other"
+#     )
+#   )
+# 
+# # Create a summary table with counts and percentages
+# summary_table <- datt %>%
+#   group_by(yearofdiagnosis, combined_race_ethnicity, regimen_type) %>%
+#   summarise(count = n(), .groups = 'drop') %>%
+#   mutate(percentage = count / n() * 100)
+# 
+# # Reorder regimen types
+# summary_table <- summary_table %>%
+#   mutate(regimen_type = factor(regimen_type, levels = c("Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other"))) %>%
+#   arrange(regimen_type)
+# 
+# # Combine counts and percentages into one cell
+# summary_table <- summary_table %>%
+#   mutate(combined = paste0(count, " (", round(percentage, 1), "%)"))
+# print(summary_table)
+# 
+# # Ensure unique combinations before pivoting
+# summary_table_unique <- summary_table %>%
+#   group_by(yearofdiagnosis, combined_race_ethnicity, regimen_type) %>%
+#   summarise(combined = paste(combined, collapse = " | "), .groups = 'drop')
+# 
+# # # Pivot the table to a wide format with combined values
+# # wide_format <- summary_table_unique %>%
+# #   select(yearofdiagnosis, combined_race_ethnicity, regimen_type, combined) %>%
+# #   pivot_wider(names_from = c(yearofdiagnosis, combined_race_ethnicity), values_from = combined, names_sep = "_", names_glue = "{year}_{combined_race_ethnicity}")
+# # 
+# # # Print the transformed table
+# # print(wide_format)
+```
+```{r}
+# all_varsofinterest <- datt %>% select(regimen_type, combined_race_ethnicity) 
+# all_varsofinterest <- all_varsofinterest %>% mutate(regimen_type = factor(regimen_type,
+#                                             levels = c("Monotherapy",
+#                                                       "Doublet",
+#                                                        "Triplet",
+#                                                       "Quadruplet","Other")))
+# 
+# 
+#  all_varsofinterest <-  all_varsofinterest%>% mutate(combined_race_ethnicity = factor(combined_race_ethnicity,
+#                                             levels = c("White", 
+#                                                        "African American",
+#                                                        "Asian",
+#                                                        "Hispanic or Latino",
+#                                                        "Other Races",
+#                                                        "Unknown/Missing")))
+# 
+# 
+# # Assume new_dat is your data frame
+# # Include all variables
+# table_all_vars <- all_varsofinterest %>% rename(`Treatment Regimens` = regimen_type) %>%
+#   tbl_summary(
+#     by = combined_race_ethnicity, # group by combined_race_ethnicity if needed
+#         type = list(
+#       all_continuous() ~ "continuous2", # Ensures median is shown for continuous variables
+#       all_categorical() ~ "categorical"
+#     ),
+#     statistic = list(all_continuous() ~ "Mean: {mean} ({sd}), Median: {median} [{min}, {max}]",
+#                      all_categorical() ~ "{n} ({p}%)"),
+#     digits = list(all_continuous() ~ c(1, 1, 1, 1, 1), 
+#                   all_categorical() ~ c(0, 1))
+#   ) %>%
+#   add_p(
+#     test = list(
+#       all_categorical() ~ "chisq.test",
+#       all_continuous()  ~ "aov"
+#     ),
+#     pvalue_fun = function(x) style_pvalue(x, digits = 3)
+#   ) %>%
+#   modify_header(update = list(label ~ "**Variable**")) %>%
+#   modify_spanning_header(all_stat_cols() ~ "**Race/Ethnicity Groups**")
+# 
+# table_all_vars
+# 
+# table_all_vars%>%
+#   as_gt() %>%
+#   gt::gtsave(filename = "treatment.html")
+
+```
+
+```{r}
+# # Create a summary dataframe to calculate percentages
+# summary_df <- datt %>%
+#   group_by(yearofdiagnosis, regimen_type) %>%
+#   summarise(count = n()) %>%
+#   mutate(percentage = count / sum(count) * 100) %>%
+#   ungroup()
+# 
+# # Create the stacked bar plot with ordered fill and labels
+# stacked_bar_regimen <- ggplot(summary_df, aes(x = factor(yearofdiagnosis), y = count, fill = factor(regimen_type, levels = c("Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other")))) +
+#   geom_bar(position = "fill", stat = "identity") +
+#   scale_y_continuous(labels = scales::percent) +
+#   labs(
+#     x = "Year of diagnosis",
+#     y = "IL MM prescription proportion (%)",
+#     fill = "Regimen Type"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     axis.text.x = element_text(angle = 45, hjust = 1)
+#   )
+#   # Define a custom color palette
+#   custom_colors <- c(
+#   "Monotherapy" = "#1f77b4",
+#   "Doublet" = "#ff7f0e",
+#   "Triplet" = "#2ca02c",
+#   "Quadruplet" = "#d62728",
+#   "Other" = "#9467bd"
+# )
+#   
+# # Add percentage labels
+# stacked_bar_regimen <- stacked_bar_regimen +
+#   geom_text(aes(label = paste0(round(percentage, 1), "%")),
+#             position = position_fill(vjust = 0.5),
+#             size = 3,
+#             color = "white")+
+#     scale_fill_manual(values = custom_colors)+ theme(panel.grid.major = element_blank(), 
+#                panel.grid.minor = element_blank())
+# 
+# # Print the plot
+# print(stacked_bar_regimen)
+```
+
+```{r}
+
+# # Create a summary dataframe with counts and percentages for each regimen type by year and racial group
+# summary_df <- datt %>%
+#   group_by(yearofdiagnosis, combined_race_ethnicity, regimen_type) %>%
+#   summarise(count = n()) %>%
+#   mutate(percentage = count / sum(count) * 100) %>%
+#   ungroup()
+# 
+# print(summary_df)
+# write.csv(summary_df, "summary_table.csv", row.names = FALSE)
+# # Generate the summary table to identify the largest distribution treatment for each year and racial group
+# largest_treatments <- summary_df %>%
+#   group_by(yearofdiagnosis, combined_race_ethnicity) %>%
+#   slice_max(order_by = percentage, n = 1, with_ties = FALSE) %>%
+#   ungroup()
+# 
+# # Identify unique racial groups
+# yearofdiagnosis <- sort(as.factor(unique(datt$yearofdiagnosis)))
+# plot_list <- list()
+# # Loop through each racial group and create individual plots
+# for (year in yearofdiagnosis) {
+#   plot_data <- summary_df %>% filter(yearofdiagnosis == year)
+#   plot_data$percentage <- plot_data$percentage/100
+#   summary_df$regimen_type <- factor(summary_df$regimen_type, levels = c("Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other"))
+# 
+#   # Define a custom color palette
+#   custom_colors <- c(
+#   "Monotherapy" = "#1f77b4",
+#   "Doublet" = "#ff7f0e",
+#   "Triplet" = "#2ca02c",
+#   "Quadruplet" = "#d62728",
+#   "Other" = "#9467bd"
+# )
+#   p <- ggplot(plot_data, aes(x = combined_race_ethnicity, y = percentage, fill = regimen_type)) +
+#     geom_bar(stat = "identity", position = "fill",width = 0.7) +
+#     geom_text(aes(label=paste0(round(percentage*100,1),"%")),position = position_stack(
+#       vjust=0.5),size=3,color="white"
+#     )+
+#     scale_y_continuous(labels = scales::percent) +
+#     labs(
+#       title = paste("Treatment Combinations for", year),
+#       x = "Year of Diagnosis",
+#       y = "1L MM Prescription Proportion (%)",
+#       fill = "regimen_type"
+#     ) +
+#     theme_minimal() +
+#     theme(
+#       axis.text.x = element_text(angle = 45, hjust = 1),
+#       legend.position = "top"
+#     )+
+#     scale_fill_manual(values = custom_colors) +
+#     theme(
+#       axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+#       axis.text.y = element_text(size = 8),
+#       legend.text = element_text(size = 8),
+#       legend.title = element_text(size = 8),
+#       plot.title = element_text(size = 12),
+#       legend.position = "right"
+#     )
+#  
+#   # Save the plot
+#   ggsave(filename = paste0("regimen_type", gsub(" ", "_", year), ".png"), plot = p, width = 10, height = 15)
+#  
+#   # Print the plot
+#   print(p)
+#    plot_list[[as.character(year)]] <- p
+# }
+# 
+# library(gridExtra)
+# 
+# # Print the summary table
+# print(largest_treatments)
+# 
+# # Save the summary table to a CSV file
+# write.csv(largest_treatments, "largest_treatments.csv", row.names = FALSE)
+
+```
+
+##SES status
+```{r}
+datt <- datt %>% mutate(sesindex2015_2019 = ifelse(is.na(sesindex2015_2019), "Missing/Unknown", sesindex2015_2019))
+
+table_ses <- datt %>% 
+  select(sesindex2015_2019, combined_race_ethnicity) %>%
+  rename(`SES Index` = sesindex2015_2019) %>% 
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+    digits = list(all_categorical() ~ c(0, 1))) %>%
+  add_p(
+    test = list(all_categorical() ~ "chisq.test"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+table_ses
+```
+
+##Site of Care (%)
+```{r}
+datt  <- datt  %>% mutate(practicetype = factor(practicetype,
+                                            levels = c("ACADEMIC", 
+                                                       "COMMUNITY",
+                                                       "Both Academic & Community"),
+                                            labels = c("Academic", 
+                                                       "Community",
+                                                       "Both Academic & Community"
+                                                       )))
+table_siteofcare <- datt %>% 
+  select(practicetype, combined_race_ethnicity) %>%
+  rename(`Site of Care` = practicetype) %>%
+  tbl_summary(
+    by = combined_race_ethnicity,
+    statistic = list(all_categorical() ~ "{n}    ({p}%)"),
+    digits = list(all_categorical() ~ c(0, 1))) %>%
+  add_p(
+    test = list(all_categorical() ~ "chisq.test"),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  )
+table_siteofcare
+```
+
+```{r}
+# # exclude line = 0 and line 1 in the original linetherapy data
+# lineoftherapy_2 <- lineoftherapy %>% filter(linenumber != 0 ) %>% 
+#   group_by(patientid,linenumber) %>% mutate(earliest_line_each = min(as.Date(linestartdate))) %>% filter(linestartdate == earliest_line_each) %>% select(-earliest_line_each ) %>% ungroup()
+# 
+# lineoftherapy_2 %>% group_by(linenumber) %>% summarise(count=n())
+# 
+# # left join lineoftherapy to the cohort "new_data"
+# # datt contains treatments
+# new_dat_lines <- datt %>% left_join(lineoftherapy_2, by="patientid") %>% group_by(patientid)
+# 
+# # Load necessary libraries
+# library(dplyr)
+# library(stringr)
+# 
+# # Step 1: Split the treatment strings and count the number of treatments
+# new_dat_lines <- new_dat_lines %>%
+#   mutate(
+#     treatment_count_2 = str_count(linename.y, ",") + 1,
+#     regimen_type_2 = case_when(
+#       treatment_count_2 == 1 ~ "Monotherapy",
+#       treatment_count_2 == 2 ~ "Doublet",
+#       treatment_count_2 == 3 ~ "Triplet",
+#       treatment_count_2 == 4 ~ "Quadruplet",
+#       TRUE ~ "Other"
+#     )
+#   )
+# 
+# new_dat_lines <- new_dat_lines %>% mutate(linenumber.y =  case_when(
+#       linenumber.y == 1 ~ "1",
+#       linenumber.y == 2 ~ "2",
+#       linenumber.y == 3 ~ "3",
+#       linenumber.y == 4 ~ "4",
+#       linenumber.y == 5 ~ "5",
+#       linenumber.y > 5 ~ "More than 5"
+#     ))
+# 
+# new_dat_lines <- new_dat_lines%>% filter(linenumber.y == 1 |linenumber.y == 2| linenumber.y == 3| linenumber.y == 4 )
+# data_multiple <- new_dat_lines %>% select(patientid, linenumber.y,regimen_type_2,combined_race_ethnicity)
+```
+
+# checking treatment patterns
+```{r}
+# check_data <- lineoftherapy_2 %>% left_join(select(enhanced_mortality_v2, patientid, dateofdeath,), by = "patientid")
+# 
+# check_data <- check_data %>% filter(linenumber=="3"|linenumber=="4") %>% filter(patientid == "F9D241E02C7E3")
+# 
+# lineoftherapy_2 %>%filter(patientid == "F9D241E02C7E3")
+# enhanced_mortality_v2 %>% filter(patientid == "F9D241E02C7E3")
+# data %>% filter(patientid == "F9D241E02C7E3")
+```
+
+
+```{r}
+# data <- data_multiple
+# 
+# data <- data %>% filter(combined_race_ethnicity =="Unknown/Missing")
+# # Load necessary libraries
+# library(dplyr)
+# library(networkD3)
+# 
+# # Ensure consistent order for treatments
+# ordered_treatments <- c( "Doublet", "Triplet", "Quadruplet", "Monotherapy","Other")
+# 
+# # Create transition data
+# transitions <- data %>%
+#   arrange(patientid, linenumber.y) %>%
+#   group_by(patientid) %>%
+#   mutate(next_line = lead(linenumber.y),
+#          next_regimen = lead(regimen_type_2)) %>%
+#   filter(!is.na(next_line)) %>%
+#   ungroup() %>%
+#   count(linenumber.y, regimen_type_2, next_line, next_regimen) %>%
+#   rename(source_line = linenumber.y, source_regimen = regimen_type_2,
+#          target_line = next_line, target_regimen = next_regimen,
+#          value = n)
+# 
+# # Calculate percentages for each treatment within each line
+# transitions <- transitions %>%
+#   group_by(source_line, source_regimen) %>%
+#   mutate(source_total = sum(value)) %>%
+#   ungroup() %>%
+#   mutate(source_percentage = paste0(round((value / source_total) * 100, 2), "%"))
+# 
+# # Create unique node labels ensuring consistent order
+# nodes <- data.frame(
+#   name = unique(c(paste(transitions$source_line, as.character(transitions$source_regimen), sep = " - "),
+#                   paste(transitions$target_line, as.character(transitions$target_regimen), sep = " - ")))
+# )
+# 
+# # Reorder nodes to ensure consistent order across lines
+# nodes <- nodes %>%
+#   arrange(factor(gsub(" - .*", "", name), levels = as.character(ordered_treatments)), name)
+# 
+# # Add percentages to the nodes
+# node_percentages <- transitions %>%
+#   group_by(source_line, source_regimen) %>%
+#   summarise(total_value = sum(value)) %>%
+#   ungroup() %>%
+#   mutate(percentage = paste0(round((total_value / sum(total_value)) * 100, 2), "%"))
+# 
+# nodes <- nodes %>%
+#   left_join(node_percentages, by = c("name" = "source_regimen"))
+# 
+# # Map node labels to IDs
+# transitions <- transitions %>%
+#   mutate(source_id = match(paste(source_line, as.character(source_regimen), sep = " - "), nodes$name) - 1,
+#          target_id = match(paste(target_line, as.character(target_regimen), sep = " - "), nodes$name) - 1)
+# 
+# # Convert transitions to a plain data frame
+# transitions <- as.data.frame(transitions)
+# 
+# # Define color scale for treatments
+# color <- 'd3.scaleOrdinal() .domain(["Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other"]) .range(["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"])'
+# 
+# # Create the Sankey diagram
+# sankey <- sankeyNetwork(
+#   Links = transitions,
+#   Nodes = nodes,
+#   Source = "source_id",
+#   Target = "target_id",
+#   Value = "value",
+#   NodeID = "name",
+#   units = "Patients",
+#   fontSize = 12,
+#   nodeWidth = 30,
+#   colourScale = color,
+#   LinkGroup = "source_regimen",
+#   iterations = 1
+# )
+# 
+# # Add custom tooltips to show percentages
+# sankey <- htmlwidgets::onRender(
+#   sankey,
+#   '
+#   function(el, x) {
+#     d3.selectAll(".link").append("title")
+#       .text(function(d) { return d.source.name + " → " + d.target.name + ": " + d.value + " (" + d.percentage + ")"; });
+#     d3.selectAll(".node text").append("title")
+#       .text(function(d) { return d.name + " (" + d.percentage + ")"; });
+#   }
+#   '
+# )
+# 
+# # Display the Sankey diagram
+# sankey
+# 
+# library(ggplot2)
+# library(ggsankeyfier)
+# library(dplyr)
+# 
+# # Prepare the data for ggsankeyfire
+# transitions_sankey <- transitions %>%
+#   mutate(
+#     source = paste(source_line, as.character(source_regimen), sep = " - "),
+#     target = paste(target_line, as.character(target_regimen), sep = " - ")
+#   )
+# # Define color scale
+# color_scale <- scale_fill_manual(
+#   values = c(
+#     "Monotherapy" = "#1f77b4", "Doublet" = "#ff7f0e", "Triplet" = "#2ca02c",
+#     "Quadruplet" = "#d62728", "Other" = "#9467bd" )
+# )
+# 
+
+```
+```{r}
+# library(dplyr)
+# library(networkD3)
+# library(htmlwidgets)
+# 
+# # Filter data if necessary
+# data <- data_multiple %>%
+#   filter(combined_race_ethnicity == "Unknown/Missing")  # Adjust this line as needed
+# 
+# # Ensure consistent order for treatments
+# ordered_treatments <- c("Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other")
+# 
+# # Create transition data
+# transitions <- data %>%
+#   arrange(patientid, linenumber.y) %>%
+#   group_by(patientid) %>%
+#   mutate(next_line = lead(linenumber.y),
+#          next_regimen = lead(regimen_type_2)) %>%
+#   filter(!is.na(next_line)) %>%
+#   ungroup() %>%
+#   count(linenumber.y, regimen_type_2, next_line, next_regimen) %>%
+#   rename(source_line = linenumber.y, source_regimen = regimen_type_2,
+#          target_line = next_line, target_regimen = next_regimen,
+#          value = n)
+# 
+# # Create unique node labels ensuring consistent order
+# nodes <- data.frame(
+#   name = unique(c(paste(transitions$source_line, as.character(transitions$source_regimen), sep = " - "),
+#                   paste(transitions$target_line, as.character(transitions$target_regimen), sep = " - ")))
+# )
+# 
+# # Add an ID to each node
+# nodes$id <- 0:(nrow(nodes) - 1)
+# 
+# # Add a treatment column to nodes
+# nodes <- nodes %>%
+#   mutate(treatment = sub(".* - ", "", name))
+# 
+# # Map node labels to IDs
+# transitions <- transitions %>%
+#   mutate(source_id = match(paste(source_line, as.character(source_regimen), sep = " - "), nodes$name) - 1,
+#          target_id = match(paste(target_line, as.character(target_regimen), sep = " - "), nodes$name) - 1,
+#          LinkGroup = source_regimen)  # Ensure LinkGroup is defined
+# 
+# # Convert transitions to a plain data frame
+# transitions <- as.data.frame(transitions)
+# 
+# # Define color scale for treatments
+# color <- 'd3.scaleOrdinal().domain(["Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other"]).range(["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"])'
+# 
+# # Create the Sankey diagram
+# sankey <- sankeyNetwork(
+#   Links = transitions,
+#   Nodes = nodes,
+#   Source = "source_id",
+#   Target = "target_id",
+#   Value = "value",
+#   NodeID = "name",
+#   units = "Patients",
+#   fontSize = 12,
+#   nodeWidth = 30,
+#   colourScale = color,
+#   LinkGroup = "LinkGroup",  # Group links by treatment type
+#   NodeGroup = "treatment"  # Group nodes by treatment type
+# )
+# 
+# # Add custom tooltips to show percentages
+# sankey <- htmlwidgets::onRender(
+#   sankey,
+#   '
+#   function(el, x) {
+#     d3.selectAll(".link").append("title")
+#       .text(function(d) { return d.source.name + " → " + d.target.name + ": " + d.value + " patients"; });
+#     d3.selectAll(".node text").append("title")
+#       .text(function(d) { return d.name; });
+#   }
+#   '
+# )
+# 
+# # Display the Sankey diagram
+# sankey
+```
+
+```{r}
+# library(dplyr)
+# library(networkD3)
+# library(htmlwidgets)
+# 
+# # Filter data if necessary
+# data <- data_multiple %>%
+#   filter(combined_race_ethnicity == "Asian")  # Adjust this line as needed
+# 
+# # Ensure consistent order for treatments
+# ordered_treatments <- c("Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other")
+# 
+# # Create transition data
+# transitions <- data %>%
+#   arrange(patientid, linenumber.y) %>%
+#   group_by(patientid) %>%
+#   mutate(next_line = lead(linenumber.y),
+#          next_regimen = lead(regimen_type_2)) %>%
+#   filter(!is.na(next_line)) %>%
+#   ungroup() %>%
+#   count(linenumber.y, regimen_type_2, next_line, next_regimen) %>%
+#   rename(source_line = linenumber.y, source_regimen = regimen_type_2,
+#          target_line = next_line, target_regimen = next_regimen,
+#          value = n)
+# 
+# # Create unique node labels ensuring consistent order
+# nodes <- data.frame(
+#   name = unique(c(paste(transitions$source_line, as.character(transitions$source_regimen), sep = " - "),
+#                   paste(transitions$target_line, as.character(transitions$target_regimen), sep = " - ")))
+# )
+# 
+# # Add an ID to each node
+# nodes$id <- 0:(nrow(nodes) - 1)
+# 
+# # Add a treatment column to nodes
+# nodes <- nodes %>%
+#   mutate(treatment = sub(".* - ", "", name))
+# 
+# # Verify that nodes are ordered correctly based on their stages
+# nodes <- nodes %>%
+#   arrange(factor(gsub(" - .*", "", name), levels = ordered_treatments), name)
+# 
+# # Map node labels to IDs
+# transitions <- transitions %>%
+#   mutate(source_id = match(paste(source_line, as.character(source_regimen), sep = " - "), nodes$name) - 1,
+#          target_id = match(paste(target_line, as.character(target_regimen), sep = " - "), nodes$name) - 1,
+#          LinkGroup = source_regimen)  # Ensure LinkGroup is defined
+# 
+# # Convert transitions to a plain data frame
+# transitions <- as.data.frame(transitions)
+# 
+# # Define color scale for treatments
+# color <- 'd3.scaleOrdinal().domain(["Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other"]).range(["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"])'
+# 
+# # Create the Sankey diagram
+# sankey <- sankeyNetwork(
+#   Links = transitions,
+#   Nodes = nodes,
+#   Source = "source_id",
+#   Target = "target_id",
+#   Value = "value",
+#   NodeID = "name",
+#   units = "Patients",
+#   fontSize = 12,
+#   nodeWidth = 30,
+#   colourScale = color,
+#   LinkGroup = "LinkGroup",  # Group links by treatment type
+#   NodeGroup = "treatment"  # Group nodes by treatment type
+# )
+# 
+# # Add custom tooltips to show percentages
+# sankey <- htmlwidgets::onRender(
+#   sankey,
+#   '
+#   function(el, x) {
+#     d3.selectAll(".link").append("title")
+#       .text(function(d) { return d.source.name + " → " + d.target.name + ": " + d.value + " patients"; });
+#     d3.selectAll(".node text").append("title")
+#       .text(function(d) { return d.name; });
+#   }
+#   '
+# )
+# 
+# # Display the Sankey diagram
+# sankey
+
+```
+
+
+```{r}
+# # Load necessary libraries
+# library(dplyr)
+# library(networkD3)
+# 
+# # Define the color scale for treatments
+# color <- 'd3.scaleOrdinal() .domain(["Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other"]) .range(["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"])'
+# 
+# # Function to create Sankey diagram for a given ethnicity
+# create_sankey_for_ethnicity <- function(ethnicity_data, ethnicity_name) {
+#   # Ensure consistent order for treatments
+#   ordered_treatments <- c("Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other")
+#   # 
+#   # # Create transition data
+#   # transitions <- ethnicity_data %>%
+#   #   arrange(patientid, linenumber.y) %>%
+#   #   group_by(patientid) %>%
+#   #   mutate(next_line = lead(linenumber.y),
+#   #          next_regimen = lead(regimen_type_2)) %>%
+#   #   filter(!is.na(next_line)) %>%
+#   #   ungroup() %>%
+#   #   count(linenumber.y, regimen_type_2, next_line, next_regimen) %>%
+#   #   rename(source_line = linenumber.y, source_regimen = regimen_type_2,
+#   #          target_line = next_line, target_regimen = next_regimen,
+#   #          value = n)
+#   
+#     # Filter to include only the desired treatments
+#   ethnicity_data <-  ethnicity_data  %>%
+#     filter(regimen_type_2 %in% ordered_treatments)
+#   
+#    # Create transition data
+#   transitions <-  ethnicity_data %>%
+#     arrange(patientid, linenumber.y) %>%
+#     group_by(patientid) %>%
+#     mutate(next_line = lead(linenumber.y),
+#            next_regimen = lead(regimen_type_2)) %>%
+#     filter(!is.na(next_line) & next_regimen %in% ordered_treatments) %>%
+#     ungroup() %>%
+#     count(linenumber.y, regimen_type_2, next_line, next_regimen) %>%
+#     rename(source_line = linenumber.y, source_regimen = regimen_type_2,
+#            target_line = next_line, target_regimen = next_regimen, value = n)
+# 
+#   # Calculate percentages for each treatment within each line
+#   transitions <- transitions %>%
+#     group_by(source_line, source_regimen) %>%
+#     mutate(source_total = sum(value)) %>%
+#     ungroup() %>%
+#     mutate(source_percentage = paste0(round((value / source_total) * 100, 2), "%"))
+# 
+#   # Create unique node labels ensuring consistent order
+#   nodes <- data.frame(
+#     name = unique(c(paste(transitions$source_line, factor(transitions$source_regimen, levels = ordered_treatments), sep = " - "),
+#                     paste(transitions$target_line, factor(transitions$target_regimen, levels = ordered_treatments), sep = " - ")))
+#   )
+# 
+#   # Ensure consistent order for nodes
+#   nodes <- nodes %>%
+#     arrange(factor(gsub(" - .*", "", name), levels = ordered_treatments), name)
+# 
+#   # Map node labels to IDs
+#   transitions <- transitions %>%
+#     mutate(source_id = match(paste(source_line, factor(source_regimen, levels = ordered_treatments), sep = " - "), nodes$name) - 1,
+#            target_id = match(paste(target_line, factor(target_regimen, levels = ordered_treatments), sep = " - "), nodes$name) - 1)
+# 
+#   # Convert transitions to a plain data frame
+#   transitions <- as.data.frame(transitions)
+# 
+#   # Create the Sankey diagram
+#   sankey <- sankeyNetwork(
+#     Links = transitions,
+#     Nodes = nodes,
+#     Source = "source_id",
+#     Target = "target_id",
+#     Value = "value",
+#     NodeID = "name",
+#     units = "Patients",
+#     fontSize = 12,
+#     nodeWidth = 30,
+#     colourScale = color,
+#     LinkGroup = "source_regimen"
+#   )
+# 
+#   # Add custom tooltips to show percentages
+#   sankey <- htmlwidgets::onRender(
+#     sankey,
+#     '
+#     function(el, x) {
+#       d3.selectAll(".link").append("title")
+#         .text(function(d) { return d.source.name + " → " + d.target.name + ": " + d.value + " (" + d.percentage + ")"; });
+#       d3.selectAll(".node text").append("title")
+#         .text(function(d) { return d.name + " (" + d.percentage + ")"; });
+#     }
+#     '
+#   )
+# 
+#   # Return the Sankey diagram
+#   return(sankey)
+# }
+# 
+# 
+# # Get unique ethnicities
+# ethnicities <- unique(data$combined_race_ethnicity)
+# 
+# # Create a list to store Sankey diagrams for each ethnicity
+# sankey_list <- list()
+# 
+# # Loop through each ethnicity and create the Sankey diagram
+# for (ethnicity in ethnicities) {
+#   ethnicity_data <- data %>% filter(combined_race_ethnicity == ethnicity)
+#   sankey_diagram <- create_sankey_for_ethnicity(ethnicity_data, ethnicity)
+#   sankey_list[[ethnicity]] <- sankey_diagram
+# }
+# 
+# # Display Sankey diagrams
+# print(sankey_list)
+```
+
+```{r}
+# # Load necessary libraries
+# library(dplyr)
+# library(networkD3)
+# library(htmltools)
+# 
+# # Define your dataset
+# data <- data_multiple
+# 
+# # Ensure consistent order for treatments
+# ordered_treatments <- c("Doublet", "Triplet", "Quadruplet", "Monotherapy", "Other")
+# 
+# # List of ethnicities (replace with actual ethnicity column name and values in your dataset)
+# ethnicities <- unique(data$combined_race_ethnicity) # Replace combined_race_ethnicity with your actual column name
+# 
+# # Function to create Sankey plot for each ethnicity
+# create_sankey_plot <- function(data, ethnicity) {
+#   # Filter data by ethnicity
+#   ethnicity_data <- data %>% filter(combined_race_ethnicity == ethnicity) # Replace combined_race_ethnicity with your actual column name
+#  
+#   # Filter to include only the desired treatments
+#   ethnicity_data <- ethnicity_data %>%
+#     filter(regimen_type_2 %in% ordered_treatments)
+#  
+#   # Create transition data
+#   transitions <- ethnicity_data %>%
+#     arrange(patientid, linenumber.y) %>%
+#     group_by(patientid) %>%
+#     mutate(next_line = lead(linenumber.y),
+#            next_regimen = lead(regimen_type_2)) %>%
+#     filter(!is.na(next_line) & next_regimen %in% ordered_treatments) %>%
+#     ungroup() %>%
+#     count(linenumber.y, regimen_type_2, next_line, next_regimen) %>%
+#     rename(source_line = linenumber.y, source_regimen = regimen_type_2,
+#            target_line = next_line, target_regimen = next_regimen, value = n)
+#  
+#   # Calculate percentages for each treatment within each line
+#   transitions <- transitions %>%
+#     group_by(source_line, source_regimen) %>%
+#     mutate(source_total = sum(value)) %>%
+#     ungroup() %>%
+#     mutate(source_percentage = paste0(round((value / source_total) * 100, 2), "%"))
+#  
+#   # Create unique node labels ensuring consistent order
+#   nodes <- data.frame(
+#     name = unique(c(paste(transitions$source_line, as.character(transitions$source_regimen), sep = " - "),
+#                     paste(transitions$target_line, as.character(transitions$target_regimen), sep = " - ")))
+#   )
+#  
+#   # Reorder nodes to ensure consistent order across lines
+#   nodes <- nodes %>%
+#     mutate(line = as.numeric(sub(" - .*", "", name))) %>%
+#     arrange(line, factor(sub(".* - ", "", name), levels = ordered_treatments), name)
+#  
+#   
+#   # Add percentages to the nodes
+#   node_percentages <- transitions %>%
+#     group_by(source_line, source_regimen) %>%
+#     summarise(total_value = sum(value)) %>%
+#     ungroup() %>%
+#     mutate(percentage = paste0(round((total_value / sum(total_value)) * 100, 2), "%"))
+#  
+#   nodes <- nodes %>%
+#     left_join(node_percentages, by = c("name" = "source_regimen"))
+#  
+#   # Map node labels to IDs
+#   transitions <- transitions %>%
+#     mutate(source_id = match(paste(source_line, as.character(source_regimen), sep = " - "), nodes$name) - 1,
+#            target_id = match(paste(target_line, as.character(target_regimen), sep = " - "), nodes$name) - 1)
+#  
+#   # Convert transitions to a plain data frame
+#   transitions <- as.data.frame(transitions)
+#  transitions <- transitions %>%
+#   mutate(source_id = match(paste(source_line, as.character(source_regimen), sep = " - "), nodes$name) - 1,
+#          target_id = match(paste(target_line, as.character(target_regimen), sep = " - "), nodes$name) - 1)
+# 
+#   # Create the Sankey diagram with color scale
+#   sankey <- sankeyNetwork(
+#     Links = transitions,
+#     Nodes = nodes,
+#     Source = "source_id",
+#     Target = "target_id",
+#     Value = "value",
+#     NodeID = "name",
+#     units = "Patients",
+#     fontSize = 12,
+#     nodeWidth = 30,
+#     colourScale = JS('d3.scaleOrdinal().domain(["Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other"]).range(["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"])')
+#   )
+#  
+#   # Add custom tooltips to show percentages
+#   sankey <- htmlwidgets::onRender(
+#     sankey,
+#     'function(el, x) {
+#       d3.selectAll(".link").append("title")
+#         .text(function(d) { return d.source.name + " → " + d.target.name + ": " + d.value + " (" + d.percentage + ")"; });
+#       d3.selectAll(".node text").append("title")
+#         .text(function(d) { return d.name + ": " + d.percentage; });
+#     }'
+#   )
+#  
+#   # Add title for the ethnicity
+#   sankey <- htmlwidgets::prependContent(sankey, htmltools::tags$h3(ethnicity))
+#  
+#   return(sankey)
+# }
+# 
+# # Create a list of Sankey plots for each ethnicity
+# sankey_plots <- lapply(ethnicities, function(e) create_sankey_plot(data, e))
+# 
+# # Combine all plots into one HTML page
+# html_page <- htmltools::tagList(sankey_plots)
+# 
+# # Save the combined HTML to a file
+# htmltools::save_html(html_page, "combined_sankey_plots.html")
+```
+
+```{r}
+# # new
+# # Load necessary libraries
+# library(dplyr)
+# library(networkD3)
+# library(htmltools)
+# 
+# # Define your dataset
+# data <- data_multiple
+# # Ensure consistent order for treatments
+# ordered_treatments <- c("Doublet", "Triplet", "Quadruplet", "Monotherapy", "Other")
+# 
+# # List of ethnicities (replace with actual ethnicity column name and values in your dataset)
+# ethnicities <- unique(data$combined_race_ethnicity) # Replace combined_race_ethnicity with your actual column name
+# 
+# # Function to create Sankey plot for each ethnicity
+# create_sankey_plot <- function(data, ethnicity) {
+#   # Filter data by ethnicity
+#   data_ethnicity <- data %>% filter(combined_race_ethnicity == ethnicity) # Replace combined_race_ethnicity with your actual column name
+#  
+#   # Filter to include only the desired treatments
+#   data_ethnicity <- data_ethnicity %>%
+#     filter(regimen_type_2 %in% ordered_treatments)
+#  
+#   # Create transition data
+#   transitions <- data_ethnicity %>%
+#     arrange(patientid, linenumber.y) %>%
+#     group_by(patientid) %>%
+#     mutate(next_line = lead(linenumber.y),
+#            next_regimen = lead(regimen_type_2)) %>%
+#     filter(!is.na(next_line) & next_regimen %in% ordered_treatments) %>%
+#     ungroup() %>%
+#     count(linenumber.y, regimen_type_2, next_line, next_regimen) %>%
+#     rename(source_line = linenumber.y, source_regimen = regimen_type_2,
+#            target_line = next_line, target_regimen = next_regimen, value = n)
+#  
+#   # Calculate percentages for each treatment within each line
+#   transitions <- transitions %>%
+#     group_by(source_line, source_regimen) %>%
+#     mutate(source_total = sum(value)) %>%
+#     ungroup() %>%
+#     mutate(source_percentage = paste0(round((value / source_total) * 100, 2), "%"))
+#  
+#   # Create unique node labels ensuring consistent order
+#   nodes <- data.frame(
+#     name = unique(c(paste(transitions$source_line, as.character(transitions$source_regimen), sep = " - "),
+#                     paste(transitions$target_line, as.character(transitions$target_regimen), sep = " - ")))
+#   )
+#  
+#   # Reorder nodes to ensure consistent order across lines
+#   nodes <- nodes %>%
+#     mutate(line = as.numeric(sub(" - .*", "", name)),
+#            regimen = sub(".* - ", "", name)) %>%
+#     arrange(line, factor(regimen, levels = ordered_treatments)) %>%
+#     mutate(id = row_number() - 1)  # Assign unique IDs
+#  
+#   # Add percentages to the nodes
+#   node_percentages <- transitions %>%
+#     group_by(source_line, source_regimen) %>%
+#     summarise(total_value = sum(value)) %>%
+#     ungroup() %>%
+#     mutate(percentage = paste0(round((total_value / sum(total_value)) * 100, 2), "%"))
+#  
+#   nodes <- nodes %>%
+#     left_join(node_percentages, by = c("name" = "source_regimen"))
+#  
+#   # Map node labels to IDs
+#   transitions <- transitions %>%
+#     mutate(source_id = nodes$id[match(paste(source_line, as.character(source_regimen), sep = " - "), nodes$name)],
+#            target_id = nodes$id[match(paste(target_line, as.character(target_regimen), sep = " - "), nodes$name)])
+#   # Convert transitions to a plain data frame
+#   transitions <- as.data.frame(transitions)
+#  
+#   # Create the Sankey diagram with color scale
+#   sankey <- sankeyNetwork(
+#     Links = transitions,
+#     Nodes = nodes,
+#     Source = "source_id",
+#     Target = "target_id",
+#     Value = "value",
+#     NodeID = "name",
+#     units = "Patients",
+#     fontSize = 12,
+#     nodeWidth = 30,
+#     colourScale = JS('d3.scaleOrdinal().domain(["Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other"]).range(["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"])')
+#   )
+#  
+#   # Add custom tooltips to show percentages
+#   sankey <- htmlwidgets::onRender(
+#     sankey,
+#     'function(el, x) {
+#       d3.selectAll(".link").append("title")
+#         .text(function(d) { return d.source.name + " → " + d.target.name + ": " + d.value + " (" + d.percentage + ")"; });
+#       d3.selectAll(".node text").append("title")
+#         .text(function(d) { return d.name + ": " + d.percentage; });
+#     }'
+#   )
+#  
+#   # Add title for the ethnicity
+#   sankey <- htmlwidgets::prependContent(sankey, htmltools::tags$h3(ethnicity))
+#  
+#   return(sankey)
+# }
+# 
+# # Create a list of Sankey plots for each ethnicity
+# sankey_plots <- lapply(ethnicities, function(e) create_sankey_plot(data, e))
+# 
+# # Combine all plots into one HTML page
+# html_page <- htmltools::tagList(sankey_plots)
+# 
+# # Save the combined HTML to a file
+# htmltools::save_html(html_page, "combined_sankey_plots.html")
+```
+
+```{r}
+# # Load necessary libraries
+# library(dplyr)
+# library(networkD3)
+# 
+# # Ensure consistent order for treatments
+# ordered_treatments <- c("Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other")
+# 
+# # Create transition data
+# transitions <- data %>%
+#   arrange(patientid, linenumber.y) %>%
+#   group_by(patientid) %>%
+#   mutate(next_line = lead(linenumber.y),
+#          next_regimen = lead(regimen_type_2)) %>%
+#   filter(!is.na(next_line)) %>%
+#   ungroup() %>%
+#   count(linenumber.y, regimen_type_2, next_line, next_regimen) %>%
+#   rename(source_line = linenumber.y, source_regimen = regimen_type_2,
+#          target_line = next_line, target_regimen = next_regimen,
+#          value = n)
+# 
+# # Calculate percentages
+# total_transitions <- sum(transitions$value)
+# transitions <- transitions %>%
+#   mutate(percentage = paste0(round((value / total_transitions) * 100, 2), "%"))
+# 
+# # Create unique node labels ensuring consistent order
+# nodes <- data.frame(
+#   name = unique(c(paste(transitions$source_line, factor(transitions$source_regimen, levels = ordered_treatments), sep = " - "),
+#                   paste(transitions$target_line, factor(transitions$target_regimen, levels = ordered_treatments), sep = " - ")))
+# )
+# 
+# # Ensure consistent order for nodes
+# nodes <- nodes %>%
+#   arrange(factor(gsub(" - .*", "", name), levels = ordered_treatments), name)
+# # Map node labels to IDs
+# transitions <- transitions %>%
+#   mutate(source_id = match(paste(source_line, factor(source_regimen, levels = ordered_treatments), sep = " - "), nodes$name) - 1,
+#          target_id = match(paste(target_line, factor(target_regimen, levels = ordered_treatments), sep = " - "), nodes$name) - 1)
+# 
+# # Convert transitions to a plain data frame
+# transitions <- as.data.frame(transitions)
+# 
+# # Define color scale for treatments
+# color <- 'd3.scaleOrdinal() .domain(["Monotherapy", "Doublet", "Triplet", "Quadruplet", "Other"]) .range(["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"])'
+# 
+# # Create the Sankey diagram
+# sankey <- sankeyNetwork(
+#   Links = transitions,
+#   Nodes = nodes,
+#   Source = "source_id",
+#   Target = "target_id",
+#   Value = "value",
+#   NodeID = "name",
+#   units = "Patients",
+#   fontSize = 12,
+#   nodeWidth = 30,
+#   colourScale = color,
+#   LinkGroup = "source_regimen"
+# )
+# 
+# # Add custom tooltips to show percentages
+# sankey <- htmlwidgets::onRender(
+#   sankey,
+#   '
+#   function(el, x) {
+#     d3.selectAll(".link").append("title")
+#       .text(function(d) { return d.source.name + " → " + d.target.name + ": " + d.value + " (" + d.percentage + ")"; });
+#   }
+#   '
+# )
+# 
+# # Display the Sankey diagram
+# sankey
+```
+
+```{r}
+# # install.packages("networkD3")
+# library(networkD3)
+# # Create transition data
+# transitions <- data %>%
+#   arrange(patientid, linenumber.y) %>%
+#   group_by(patientid) %>%
+#   mutate(next_line = lead(linenumber.y),
+#          next_regimen = lead(regimen_type_2)) %>%
+#   filter(!is.na(next_line)) %>%
+#   ungroup() %>%
+#   count(linenumber.y, regimen_type_2, next_line, next_regimen) %>%
+#   rename(source_line = linenumber.y, source_regimen = regimen_type_2,
+#          target_line = next_line, target_regimen = next_regimen,
+#          value = n)
+# 
+# # Create unique node labels
+# nodes <- data.frame(name = unique(c(paste(transitions$source_line, transitions$source_regimen, sep = " - "),
+#                                     paste(transitions$target_line, transitions$target_regimen, sep = " - "))))
+# 
+# # Map node labels to IDs
+# transitions <- transitions %>%
+#   mutate(source_id = match(paste(source_line, source_regimen, sep = " - "), nodes$name) - 1,
+#          target_id = match(paste(target_line, target_regimen, sep = " - "), nodes$name) - 1)
+# 
+# # Create the Sankey diagram
+# sankeyNetwork(Links = transitions, Nodes = nodes,
+#               Source = "source_id", Target = "target_id",
+#               Value = "value", NodeID = "name",
+#               units = "T", fontSize = 12, nodeWidth = 30)
+```
+```{r}
+
+# Load necessary packages
+library(gtsummary)
+library(dplyr)
+# 
+# all_varsofinterest <- new_dat %>% select(age_at_1L,gender, combined_ecog, issstage, practicetype,
+#                                                              year_diag_group, transplant_type_2, sesindex2015_2019, combined_race_ethnicity)
+# # Assume new_dat is your data frame
+# # Include all variables
+# table_all_vars <- all_varsofinterest %>%
+#   tbl_summary(
+#     by = combined_race_ethnicity, # group by combined_race_ethnicity if needed
+#         type = list(
+#       all_continuous() ~ "continuous2", # Ensures median is shown for continuous variables
+#       all_categorical() ~ "categorical"
+#     ),
+#     statistic = list(all_continuous() ~ "Mean: {mean} ({sd}), Median: {median} [{min}, {max}]",
+#                      all_categorical() ~ "{n} ({p}%)"),
+#     digits = list(all_continuous() ~ c(1, 1, 1, 1, 1), 
+#                   all_categorical() ~ c(0, 1))
+#   ) %>%
+#   add_p(
+#     test = list(
+#       all_categorical() ~ "chisq.test",
+#       all_continuous()  ~ "aov"
+#     ),
+#     pvalue_fun = function(x) style_pvalue(x, digits = 3)
+#   ) %>%
+#   modify_header(update = list(label ~ "**Variable**")) %>%
+#   modify_spanning_header(all_stat_cols() ~ "**Statistics**")
+# 
+# 
+# table_all_vars%>%
+#   as_gt() %>%
+#   gt::gtsave(filename = "demographics.html")
+```
+
+```{r}
+# Load necessary packages
+library(gtsummary)
+library(dplyr)
+
+all_varsofinterest <- new_dat %>% select(hemoglobin, Ploidy, `Deletion 13q`, marker_calcium_result,marker_creatinie_result,risk_group,combined_race_ethnicity)
+
+all_varsofinterest <- all_varsofinterest %>%
+  mutate(Anemia = case_when(
+   hemoglobin == "1" ~ "Yes",
+   hemoglobin == "2" ~ "No",
+   hemoglobin == "3" ~ "Unknown/Missing"
+  )) %>% mutate(
+  `Renal Insufficieny` = case_when(
+    marker_creatinie_result == "1" ~ "Yes",
+     marker_creatinie_result == "2" ~ "No",
+     marker_creatinie_result == "3" ~ "Unknown/Missing"
+  )
+  ) %>% mutate(
+    `Hypercalcemia` = case_when(
+    marker_calcium_result == "1" ~ "Yes",
+     marker_calcium_result == "2" ~ "No",
+     marker_calcium_result == "3" ~ "Unknown/Missing"
+    )
+  ) %>% mutate(
+    `Cytogenetic Risk Groups` = case_when(
+    risk_group  == "standard risk" ~ "Standard Risk",
+     risk_group  == "high risk" ~ "High Risk",
+     risk_group  == "intermediate risk" ~ "Intermediate Risk",
+     risk_group  == "unknown/missing" ~ "Unknown/Missing"
+    )
+  ) 
+
+
+all_varsofinterest <- all_varsofinterest %>% mutate(`Renal Insufficieny` = factor(`Renal Insufficieny`,
+                                            levels = c("Yes",
+                                                      "No",
+                                                       "Unknown/Missing"))) %>% mutate( `Hypercalcemia` = factor( `Hypercalcemia`,
+                                            levels = c("Yes",
+                                                      "No",
+                                                       "Unknown/Missing"))) %>% mutate( Anemia  = factor( Anemia ,
+                                            levels = c("Yes",
+                                                      "No",
+                                                       "Unknown/Missing"))) %>% select(`Renal Insufficieny`,
+                                                                                       `Hypercalcemia`,Anemia ,
+                                                                                       Ploidy, `Deletion 13q`, `Cytogenetic Risk Groups`,combined_race_ethnicity) 
+
+ all_varsofinterest <-  all_varsofinterest%>% mutate(combined_race_ethnicity = factor(combined_race_ethnicity,
+                                            levels = c("White", 
+                                                       "African American",
+                                                       "Asian",
+                                                       "Hispanic or Latino",
+                                                       "Other Races",
+                                                       "Unknown/Missing")))
+
+# Assume new_dat is your data frame
+# Include all variables
+table_all_vars <- all_varsofinterest %>%
+  tbl_summary(
+    by = combined_race_ethnicity, # group by combined_race_ethnicity if needed
+        type = list(
+      all_continuous() ~ "continuous2", # Ensures median is shown for continuous variables
+      all_categorical() ~ "categorical"
+    ),
+    statistic = list(all_continuous() ~ "Mean: {mean} ({sd}), Median: {median} [{min}, {max}]",
+                     all_categorical() ~ "{n} ({p}%)"),
+    digits = list(all_continuous() ~ c(1, 1, 1, 1, 1), 
+                  all_categorical() ~ c(0, 1))
+  ) %>%
+  add_p(
+    test = list(
+      all_categorical() ~ "chisq.test",
+      all_continuous()  ~ "aov"
+    ),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  ) %>%
+  modify_header(update = list(label ~ "**Variable**")) %>%
+  modify_spanning_header(all_stat_cols() ~ "**Race/Ethnicity Groups**")
+
+table_all_vars
+
+
+table_all_vars%>%
+  as_gt() %>%
+  gt::gtsave(filename = "biomarkers.html")
+```
+## descriptive statistics table
+
+
+```{r}
+# library(gtsummary)
+# library(dplyr)
+# datt<- datt%>% mutate(year_diag_group = case_when(
+#   yearofdiagnosis >= 2010 & yearofdiagnosis <= 2014 ~ "2011-2014",
+#   yearofdiagnosis >= 2015 & yearofdiagnosis <= 2019 ~ "2015-2019",
+#    yearofdiagnosis >= 2020 & yearofdiagnosis <= 2024 ~ "2020-2024",
+#   TRUE ~ "Other"
+# ))
+# 
+# datt <- datt %>% mutate(age_group = case_when(
+#   age_at_1L < 65 ~ "<65",
+#   age_at_1L >= 65 ~ ">= 65"
+# ))
+# 
+# all_varsofinterest <- datt %>% select( age_group,combined_race_ethnicity,age_at_1L, gender, combined_ecog, issstage, asct, year_diag_group, practicetype, sesindex2015_2019, ) 
+# 
+# all_varsofinterest <- all_varsofinterest %>%
+#   mutate(gender = case_when(
+#     gender == "F" ~ "Female",
+#     gender == "M" ~ "Male"
+#   )) %>% mutate(
+#   issstage = case_when(
+#     issstage == "Unknown/not documented" ~ "Unknown/Missing",
+#     issstage == "Stage I" ~ "Stage I",
+#     issstage == "Stage II" ~ "Stage II",
+#     issstage == "Stage III" ~ "Stage III",
+#     
+#   )
+#   ) %>% mutate(
+#     sesindex2015_2019 = case_when(
+#       sesindex2015_2019 == "1 - Lowest SES" ~ "1" ,
+#       sesindex2015_2019 == "2" ~ "2" ,
+#       sesindex2015_2019 == "3" ~ "3" ,
+#       sesindex2015_2019 == "4" ~ "4" ,
+#       sesindex2015_2019 == "5 - Highest SES" ~ "5" ,
+#       TRUE ~ "Unknown/Missing"
+# 
+#     )
+#   )
+# 
+#  all_varsofinterest <-  all_varsofinterest%>% mutate(combined_race_ethnicity = factor(combined_race_ethnicity,
+#                                             levels = c("White", 
+#                                                        "African American",
+#                                                        "Asian",
+#                                                        "Hispanic or Latino",
+#                                                        "Other Races",
+#                                                        "Unknown/Missing"))) 
+# # Assume new_dat is your data frame
+# # Include all variables
+# table_all_vars <- all_varsofinterest %>% rename(`Age at 1L Treatment` = age_at_1L,
+#                                                  `Age Group at 1L Treatment` = age_group,
+#                                                 `Sex` = gender,
+#                                                 `ECOG Performance` = combined_ecog,
+#                                                 `ISS Stage` = issstage,
+#                                                 `Autologous Stem Cell Transplant` = asct,
+#                                                 `Year Group of Diagnosis` = year_diag_group,
+#                                                 `Site of Care` = practicetype,
+#                                                 `Socioeconomic Status (SES)` = sesindex2015_2019) %>%
+#   tbl_summary(
+#     by = combined_race_ethnicity, # group by combined_race_ethnicity if needed
+#         type = list(
+#     
+#       all_categorical() ~ "categorical"
+#     ),
+#     statistic = list(
+#                      all_categorical() ~ "{n} ({p}%)"),
+#     digits = list(
+#                   all_categorical() ~ c(0, 1))
+#   ) %>%
+#   add_p(
+#     test = list(
+#       all_categorical() ~ "chisq.test"
+#     ),
+#     pvalue_fun = function(x) style_pvalue(x, digits = 3)
+#   ) %>%
+#   modify_header(update = list(label ~ "**Variable**")) 
+# 
+# table_all_vars
+# 
+# table_all_vars%>%
+#   as_gt() %>%
+#   gt::gtsave(filename = "treatment.pdf", expand=10)
+# 
+# table_all_vars %>%
+#   as_gt() %>%
+#   tab_options(table.font.size = pct(80)) %>%  # Reduce font size to 80% of default
+#   gtsave(filename = "treatment.pdf")
+
+```
+
+```{r}
+library(gtsummary)
+library(dplyr)
+datt<- datt%>% mutate(year_diag_group = case_when(
+  yearofdiagnosis >= 2010 & yearofdiagnosis <= 2014 ~ "2011-2014",
+  yearofdiagnosis >= 2015 & yearofdiagnosis <= 2019 ~ "2015-2019",
+   yearofdiagnosis >= 2020 & yearofdiagnosis <= 2024 ~ "2020-2024",
+  TRUE ~ "Other"
+))
+
+datt <- datt %>% mutate(age_group = case_when(
+  age_at_1L < 65 ~ "<65",
+  age_at_1L >= 65 ~ "≥ 65"
+))
+
+all_varsofinterest <- datt %>% select( age_group,combined_race_ethnicity,gender, combined_ecog, issstage, asct, year_diag_group, practicetype, sesindex2015_2019,hemoglobin, Ploidy, `Deletion 13q`, marker_calcium_result,marker_creatinie_result,risk_group ) 
+
+# all_varsofinterest <- all_varsofinterest %>% mutate(regimen_type = factor(regimen_type,
+#                                             levels = c("Monotherapy",
+#                                                       "Doublet",
+#                                                        "Triplet",
+#                                                       "Quadruplet","Other")))
+# all_varsofinterest <- all_varsofinterest %>% filter(combined_race_ethnicity != "Unknown/Missing")
+all_varsofinterest <- all_varsofinterest %>%
+  mutate(gender = case_when(
+    gender== "F" ~ "Female",
+    gender== "M" ~ "Male"
+  )) %>% mutate(
+  issstage = case_when(
+    issstage == "Unknown/not documented" ~ "Unknown/Missing",
+    issstage == "Stage I" ~ "Stage I",
+    issstage == "Stage II" ~ "Stage II",
+    issstage == "Stage III" ~ "Stage III",
+    
+  )
+  ) %>% mutate(
+    sesindex2015_2019 = case_when(
+      sesindex2015_2019 == "1 - Lowest SES" ~ "1" ,
+      sesindex2015_2019 == "2" ~ "2" ,
+      sesindex2015_2019 == "3" ~ "3" ,
+      sesindex2015_2019 == "4" ~ "4" ,
+      sesindex2015_2019 == "5 - Highest SES" ~ "5" ,
+      TRUE ~ "Unknown/Missing"
+
+    )
+  ) %>% mutate(combined_ecog = factor(combined_ecog,
+                                            levels = c("0-1", "≥2",
+                                                       "Unknown/Missing")))
+
+ all_varsofinterest <-  all_varsofinterest%>% mutate(combined_race_ethnicity = factor(combined_race_ethnicity,
+                                            levels = c("White", 
+                                                       "African American",
+                                                       "Asian",
+                                                       "Hispanic or Latino",
+                                                       "Other Races",
+                                                       "Unknown/Missing")))
+ 
+ all_varsofinterest <- all_varsofinterest %>%
+  mutate(Anemia = case_when(
+   hemoglobin == "1" ~ "Yes",
+   hemoglobin == "2" ~ "No",
+   hemoglobin == "3" ~ "Unknown/Missing"
+  )) %>% mutate(
+  `Renal Insufficieny` = case_when(
+    marker_creatinie_result == "1" ~ "Yes",
+     marker_creatinie_result == "2" ~ "No",
+     marker_creatinie_result == "3" ~ "Unknown/Missing"
+  )
+  ) %>% mutate(
+    `Hypercalcemia` = case_when(
+    marker_calcium_result == "1" ~ "Yes",
+     marker_calcium_result == "2" ~ "No",
+     marker_calcium_result == "3" ~ "Unknown/Missing"
+    )
+  ) %>% mutate(
+    `Cytogenetic Risk Groups` = case_when(
+    risk_group  == "standard risk" ~ "Standard Risk",
+     risk_group  == "high risk" ~ "High Risk",
+     risk_group  == "intermediate risk" ~ "Intermediate Risk",
+    TRUE ~ "Unknown/Missing"
+    )
+  ) 
+
+
+all_varsofinterest <- all_varsofinterest %>% mutate(`Renal Insufficieny` = factor(`Renal Insufficieny`,
+                                            levels = c("Yes",
+                                                      "No",
+                                                       "Unknown/Missing"))) %>% mutate( `Hypercalcemia` = factor( `Hypercalcemia`,
+                                            levels = c("Yes",
+                                                      "No",
+                                                       "Unknown/Missing"))) %>% mutate( Anemia  = factor( Anemia ,
+                                            levels = c("Yes",
+                                                      "No",
+                                                       "Unknown/Missing")))
+
+ all_varsofinterest <-  all_varsofinterest%>% mutate(combined_race_ethnicity = factor(combined_race_ethnicity,
+                                            levels = c("White", 
+                                                       "African American",
+                                                       "Asian",
+                                                       "Hispanic or Latino",
+                                                       "Other Races",
+                                                       "Unknown/Missing")))%>% select(-marker_calcium_result,-marker_creatinie_result,-risk_group,-hemoglobin)
+
+race_ethnicity_proportions <- all_varsofinterest %>% count(combined_race_ethnicity) %>% mutate( 
+  proportion = round(100 * n / sum(n), 1))
+  
+
+ 
+  # Include all variables
+table_all_vars <- all_varsofinterest %>% 
+  tbl_summary(
+    by = combined_race_ethnicity, # group by combined_race_ethnicity if needed
+        type = list(
+      all_categorical() ~ "categorical"
+    ),
+    label = list(
+age_group ~ "Age at 1L Treatment\n(p < 0.001)",
+ gender ~ "Sex at Birth\n(p < 0.001)",
+combined_ecog ~ "ECOG Performance Status\n(p = 0.026)",
+ issstage ~ "ISS Stage\n(p < 0.001)",
+ asct ~ "ASCT\n(p < 0.001)",
+ year_diag_group ~ "Year of Diagnosis\n(p < 0.001)",
+ practicetype ~ "Site of Care\n(p < 0.001)",
+ sesindex2015_2019 ~ "SES Quintile\n(p < 0.001)",
+Ploidy ~ "Ploidy\n(p = 0.923)",
+ `Deletion 13q` ~ "Deletion 13q\n(p < 0.001)",
+ Anemia ~ "Anemia\n(p < 0.001)",
+`Renal Insufficieny` ~ "Renal Insufficiency\n(p = 0.052)",
+ Hypercalcemia ~ "Hypercalcemia\n(p = 0.004)",
+`Cytogenetic Risk Groups` ~ "Cytogenetic Risk Group\n(p = 0.409)"
+),
+    statistic = list(all_continuous() ~ "Mean: {mean} ({sd}), Median: {median} [{min}, {max}]",
+                     all_categorical() ~ "{n} ({p}%)",
+                       combined_race_ethnicity ~ "{n}({p}%)"),
+    digits = list(
+                  all_categorical() ~ c(0, 1))
+  ) 
+#%>%
+  # add_p(
+  #   test = list(
+  #     all_categorical() ~ "chisq.test"
+  #   ),
+  #   pvalue_fun = function(x) style_pvalue(x, digits = 3)
+  # ) %>% add_overall() %>%
+  # modify_header(update = list(label~ "**Variable**")) 
+
+
+table_all_vars 
+
+library(gt)
+table_all_vars <- table_all_vars %>%
+  as_gt() %>%
+  tab_options(table.font.size = pct(60)) 
+saveRDS(table_all_vars, "stats.rds")
+
+# # Create table summary with line break format
+# table_all_vars <- all_varsofinterest %>% rename(
+#                                                  `Age at 1L Treatment \\\\ (p < 0.001)` = age_group,
+#                                                 `Birth Sex (p < 0.001)` = gender,
+#                                                 `ECOG Performance Status (p = 0.026)` = combined_ecog,
+#                                                 `ISS Stage (p < 0.001)` = issstage,
+#                                                 `ASCT (p < 0.001)` = asct,
+#                                                 `Year of Diagnosis (p < 0.001)` = year_diag_group,
+#                                                 `Site of Care (p < 0.001)` = practicetype,
+#                                                 `SES Quintile (p < 0.001)` = sesindex2015_2019,
+#                                                 `Ploidy (p =0.923)` = Ploidy,
+#                                                 `Deletion 13q (p < 0.001)` = `Deletion 13q`,
+#                                                 `Anemia (p < 0.001)` = Anemia,
+#                                                 `Renal Insufficiency (p = 0.052)` = `Renal Insufficieny`,
+#                                                 `Hypercalcemia (p = 0.004)` = Hypercalcemia,
+#                                                 `Cytogenetic Risk Groups (p = 0.409)` = `Cytogenetic Risk Groups`) %>% tbl_summary(
+# by = combined_race_ethnicity,
+# type = list(all_categorical() ~ "categorical"),
+# statistic = list(all_categorical() ~ "{n} \\\\ ({p}%)"), # double backslash for LaTeX line break
+# digits = list(all_categorical() ~ c(0, 1))
+# )
+# 
+# # Output as kableExtra table (LaTeX)
+# table_all_vars %>%
+# as_kable(format = "latex", booktabs = TRUE, escape = FALSE) %>%
+# kable_styling(latex_options = c("hold_position", "scale_down"))
+# %>% rename(
+#                                                  `Age at 1L Treatment\n(p < 0.001)` = age_group,
+#                                                 `Birth Sex (p < 0.001)` = gender,
+#                                                 `ECOG Performance Status (p = 0.026)` = combined_ecog,
+#                                                 `ISS Stage (p < 0.001)` = issstage,
+#                                                 `ASCT (p < 0.001)` = asct,
+#                                                 `Year of Diagnosis (p < 0.001)` = year_diag_group,
+#                                                 `Site of Care (p < 0.001)` = practicetype,
+#                                                 `SES Quintile (p < 0.001)` = sesindex2015_2019,
+#                                                 `Ploidy (p = 0.923)` = Ploidy,
+#                                                 `Deletion 13q (p < 0.001)` = `Deletion 13q`,
+#                                                 `Anemia (p < 0.001)` = Anemia,
+#                                                 `Renal Insufficiency (p = 0.052)` = `Renal Insufficieny`,
+#                                                 `Hypercalcemia (p = 0.004)` = Hypercalcemia,
+#                                                 `Cytogenetic Risk Groups (p = 0.409)` = `Cytogenetic Risk Groups`)
+
+
+```
+
+# Marked Table 1
+```{r}
+# Create the table first
+table_all_vars <- all_varsofinterest %>% tbl_summary(
+    by = combined_race_ethnicity, # group by combined_race_ethnicity if needed
+        type = list(
+      all_categorical() ~ "categorical"
+    ),
+    label = list(
+age_group ~ "Age at 1L Treatment\n(p < 0.001)",
+ gender ~ "Sex at Birth\n(p < 0.001)",
+combined_ecog ~ "ECOG Performance Status\n(p = 0.026)",
+ issstage ~ "ISS Stage\n(p < 0.001)",
+ asct ~ "ASCT\n(p < 0.001)",
+ year_diag_group ~ "Year of Diagnosis\n(p < 0.001)",
+ practicetype ~ "Site of Care\n(p < 0.001)",
+ sesindex2015_2019 ~ "SES Quintile\n(p < 0.001)",
+Ploidy ~ "Ploidy\n(p = 0.923)",
+ `Deletion 13q` ~ "Deletion 13q\n(p < 0.001)",
+ Anemia ~ "Anemia\n(p < 0.001)",
+`Renal Insufficieny` ~ "Renal Insufficiency\n(p = 0.052)",
+ Hypercalcemia ~ "Hypercalcemia\n(p = 0.004)",
+`Cytogenetic Risk Groups` ~ "Cytogenetic Risk Group\n(p = 0.409)"
+),
+    statistic = list(all_continuous() ~ "Mean: {mean} ({sd}), Median: {median} [{min}, {max}]",
+                     all_categorical() ~ "{n} ({p}%)",
+                       combined_race_ethnicity ~ "{n}({p}%)"),
+    digits = list(
+                  all_categorical() ~ c(0, 1))
+  )
+
+
+
+table_all_vars_2 <- table_all_vars %>% 
+  modify_table_body(
+    ~ .x %>%
+      mutate(
+        stat_3 = case_when(
+          label == "Hypodiploid" ~ "≤5",
+          label == "Hyperdiploid" ~ "15–20 (1-10%)",
+          variable == "Ploidy" & label == "Unknown/Missing" ~ "170–180 (9-99%)" ,
+        TRUE ~ stat_3))) %>% modify_table_body(
+    ~ .x %>%
+      mutate(
+        stat_5 = case_when(
+           label == "Hypodiploid" ~ "≤5",
+          label == "Hyperdiploid" ~ "15–20 (1-10%)",
+          variable  =="Ploidy" & label == "Unknown/Missing" ~ "470–480 (90-99%)",TRUE ~ stat_5 ) )) %>% modify_table_body(
+    ~ .x %>%
+      mutate(
+        stat_3 = case_when(
+         label == "Both Academic & Community" ~ "≤5",
+        label == "Academic" ~ "45-50 (0-10%)",
+        label == "Community" ~ "130-140 (90-100%)", TRUE ~ stat_3 ) )) %>% modify_table_body(
+    ~ .x %>%
+      mutate(
+        stat_3 = case_when(
+        variable == "Renal Insufficieny" & label == "Yes" ~ "≤5", 
+        variable == "Renal Insufficieny" & label == "No" ~ "≤5", 
+        variable == "Renal Insufficieny" & label == "Unknown/Missing"~ "170-180",
+        TRUE ~ stat_3 ) )) %>% 
+  modify_table_body(
+    ~ .x %>%
+      mutate(
+        stat_2 = case_when(
+        variable == "Hypercalcemia" & label == "Yes" ~ "40-50", 
+        variable == "Hypercalcemia" & label == "No" ~ "≤5", 
+        variable == "Hypercalcemia" & label == "Unknown/Missing"~ "1,780-1,790",
+        TRUE ~ stat_2 ) ))  %>% 
+  modify_table_body(
+    ~ .x %>%
+      mutate(
+        stat_3 = case_when(
+        variable == "Hypercalcemia" & label == "Yes" ~ "≤5", 
+        variable == "Hypercalcemia" & label == "No" ~ "≤5", 
+        variable == "Hypercalcemia" & label == "Unknown/Missing"~ "175-185",
+        TRUE ~ stat_3) )) %>% 
+  modify_table_body(
+    ~ .x %>%
+      mutate(
+        stat_4 = case_when(
+        variable == "Hypercalcemia" & label == "Yes" ~ "10-20", 
+        variable == "Hypercalcemia" & label == "No" ~ "≤5", 
+        variable == "Hypercalcemia" & label == "Unknown/Missing"~ "710-720",
+        TRUE ~ stat_4 ) )) %>% 
+  modify_table_body(
+    ~ .x %>%
+      mutate(
+        stat_5 = case_when(
+        variable == "Hypercalcemia" & label == "Yes" ~ "10-20", 
+        variable == "Hypercalcemia" & label == "No" ~ "≤5", 
+        variable == "Hypercalcemia" & label == "Unknown/Missing"~ "470-480",
+        TRUE ~ stat_5 ) )) %>% modify_table_styling(
+    columns = label,
+    rows = (variable == "Ploidy" & label =="Hypodiploid") | (variable == "practicetype" & label == "Both Academic & Community") | (variable == "Renal Insufficieny" & label == "Yes")|(variable == "Renal Insufficieny" & label == "No") | (variable == "Hypercalcemia" & label == "Yes") | (variable == "Hypercalcemia" & label == "No"),
+    footnote = "Cells ≤5 are suppressed for confidentiality"
+  ) %>% modify_footnote(all_stat_cols() ~ "All data are reported as n (%) unless suppressed for confidentiality. P-values are reported as (p) and reflect comaprsions across race/ethnicity groups using Chi-square tests.")
+
+table_all_vars_2
+
+
+library(gt)
+table_all_vars_2 <- table_all_vars_2 %>% as_gt() %>%
+  tab_options(table.font.size = pct(60)) %>% tab_source_note(source_note = "Table 1. Descriptive statistics among MM patients by race/ethnicity.") %>% tab_options(
+source_notes.font.size = px(14) )
+
+saveRDS(table_all_vars_2, "stats_2.rds")
+
+plot1 <- readRDS("stats_2.rds")
+plot1
+
+library(gtsummary)
+gtsave(plot1,"table_1_main.png")
+``` 
+
+### White vs. AA
+```{r}
+# Subset the data to two groups only
+all_varsofinterest_aa <- all_varsofinterest %>%
+filter(combined_race_ethnicity %in% c("White", "African American"))
+
+# Make sure White is the reference
+all_varsofinterest_aa <- all_varsofinterest_aa %>%
+mutate(combined_race_ethnicity = factor(combined_race_ethnicity, levels = c("White", "African American")))
+
+table_all_vars_aa <- all_varsofinterest_aa %>% 
+  tbl_summary(
+    by = combined_race_ethnicity, # group by combined_race_ethnicity if needed
+        type = list(
+      all_categorical() ~ "categorical"
+    ),
+    label = list(
+age_group ~ "Age at 1L Treatment",
+ gender ~ "Birth Sex",
+combined_ecog ~ "ECOG Performance Status",
+ issstage ~ "ISS Stage",
+ asct ~ "ASCT",
+ year_diag_group ~ "Year of Diagnosis",
+ practicetype ~ "Site of Care",
+ sesindex2015_2019 ~ "SES Quintile",
+Ploidy ~ "Ploidy",
+ `Deletion 13q` ~ "Deletion 13q",
+ Anemia ~ "Anemia",
+`Renal Insufficieny` ~ "Renal Insufficiency",
+ Hypercalcemia ~ "Hypercalcemia",
+`Cytogenetic Risk Groups` ~ "Cytogenetic Risk Groups"
+),
+    statistic = list(all_continuous() ~ "Mean: {mean} ({sd}), Median: {median} [{min}, {max}]",
+                     all_categorical() ~ "{n} ({p}%)",
+                       combined_race_ethnicity ~ "{n}({p}%)"),
+    digits = list(
+                  all_categorical() ~ c(0, 1))
+  ) %>%   add_difference(everything() ~ "smd") %>% 
+  add_p(
+     test = list(
+       all_categorical() ~ "chisq.test"
+     ),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+   ) %>% add_overall() %>%
+  modify_column_hide(ci)
+
+
+table_all_vars_aa 
+
+library(gt)
+table_all_vars_aa<- table_all_vars_aa %>%
+  as_gt() %>%
+  tab_options(table.font.size = pct(60)) 
+saveRDS(table_all_vars_aa, "stats_aa.rds")
+
+
+# table1 <- CreateTableOne(vars = vars, strata = "combined_race_ethnicity", data = all_varsofinterest_aa)
+# print(table1, smd = TRUE)
+```
+### White vs. Asian
+```{r}
+# Subset the data to two groups only
+all_varsofinterest_asian <- all_varsofinterest %>%
+filter(combined_race_ethnicity %in% c("White", "Asian"))
+
+# Make sure White is the reference
+all_varsofinterest_asian <- all_varsofinterest_asian %>%
+mutate(combined_race_ethnicity = factor(combined_race_ethnicity, levels = c("White", "Asian")))
+
+table_all_vars_asian <- all_varsofinterest_asian %>% 
+  tbl_summary(
+    by = combined_race_ethnicity, # group by combined_race_ethnicity if needed
+        type = list(
+      all_categorical() ~ "categorical"
+    ),
+    label = list(
+age_group ~ "Age at 1L Treatment",
+ gender ~ "Birth Sex",
+combined_ecog ~ "ECOG Performance Status",
+ issstage ~ "ISS Stage",
+ asct ~ "ASCT",
+ year_diag_group ~ "Year of Diagnosis",
+ practicetype ~ "Site of Care",
+ sesindex2015_2019 ~ "SES Quintile",
+Ploidy ~ "Ploidy",
+ `Deletion 13q` ~ "Deletion 13q",
+ Anemia ~ "Anemia",
+`Renal Insufficieny` ~ "Renal Insufficiency",
+ Hypercalcemia ~ "Hypercalcemia",
+`Cytogenetic Risk Groups` ~ "Cytogenetic Risk Groups"
+),
+    statistic = list(all_continuous() ~ "Mean: {mean} ({sd}), Median: {median} [{min}, {max}]",
+                     all_categorical() ~ "{n} ({p}%)",
+                       combined_race_ethnicity ~ "{n}({p}%)"),
+    digits = list(
+                  all_categorical() ~ c(0, 1))
+  ) %>%   add_difference(everything() ~ "smd") %>% 
+  add_p(
+     test = list(
+       all_categorical() ~ "chisq.test"
+     ),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+   ) %>% add_overall() %>%
+  modify_column_hide(ci)
+
+
+table_all_vars_asian
+
+library(gt)
+table_all_vars_asian<- table_all_vars_asian %>%
+  as_gt() %>%
+  tab_options(table.font.size = pct(60)) 
+saveRDS(table_all_vars_asian, "stats_asian.rds")
+
+
+# table1 <- CreateTableOne(vars = vars, strata = "combined_race_ethnicity", data = all_varsofinterest_aa)
+# print(table1, smd = TRUE)
+```
+
+### White vs. HL
+```{r}
+# Subset the data to two groups only
+all_varsofinterest_hl <- all_varsofinterest %>%
+filter(combined_race_ethnicity %in% c("White", "Hispanic or Latino"))
+
+# Make sure White is the reference
+all_varsofinterest_hl <- all_varsofinterest_hl %>%
+mutate(combined_race_ethnicity = factor(combined_race_ethnicity, levels = c("White", "Hispanic or Latino")))
+
+table_all_vars_hl <- all_varsofinterest_hl %>% 
+  tbl_summary(
+    by = combined_race_ethnicity, # group by combined_race_ethnicity if needed
+        type = list(
+      all_categorical() ~ "categorical"
+    ),
+    label = list(
+age_group ~ "Age at 1L Treatment",
+ gender ~ "Birth Sex",
+combined_ecog ~ "ECOG Performance Status",
+ issstage ~ "ISS Stage",
+ asct ~ "ASCT",
+ year_diag_group ~ "Year of Diagnosis",
+ practicetype ~ "Site of Care",
+ sesindex2015_2019 ~ "SES Quintile",
+Ploidy ~ "Ploidy",
+ `Deletion 13q` ~ "Deletion 13q",
+ Anemia ~ "Anemia",
+`Renal Insufficieny` ~ "Renal Insufficiency",
+ Hypercalcemia ~ "Hypercalcemia",
+`Cytogenetic Risk Groups` ~ "Cytogenetic Risk Groups"
+),
+    statistic = list(all_continuous() ~ "Mean: {mean} ({sd}), Median: {median} [{min}, {max}]",
+                     all_categorical() ~ "{n} ({p}%)",
+                       combined_race_ethnicity ~ "{n}({p}%)"),
+    digits = list(
+                  all_categorical() ~ c(0, 1))
+  ) %>%   add_difference(everything() ~ "smd") %>% 
+  add_p(
+     test = list(
+       all_categorical() ~ "chisq.test"
+     ),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+   ) %>% add_overall() %>%
+  modify_column_hide(ci)
+
+
+table_all_vars_hl
+
+library(gt)
+table_all_vars_hl<- table_all_vars_hl %>%
+  as_gt() %>%
+  tab_options(table.font.size = pct(60)) 
+saveRDS(table_all_vars_hl, "stats_hl.rds")
+
+
+# table1 <- CreateTableOne(vars = vars, strata = "combined_race_ethnicity", data = all_varsofinterest_aa)
+# print(table1, smd = TRUE)
+```
+### White vs. Other Races
+```{r}
+# Subset the data to two groups only
+all_varsofinterest_other <- all_varsofinterest %>%
+filter(combined_race_ethnicity %in% c("White", "Other Races"))
+
+# Make sure White is the reference
+all_varsofinterest_other <- all_varsofinterest_other %>%
+mutate(combined_race_ethnicity = factor(combined_race_ethnicity, levels = c("White", "Other Races")))
+
+table_all_vars_other <- all_varsofinterest_other %>% 
+  tbl_summary(
+    by = combined_race_ethnicity, # group by combined_race_ethnicity if needed
+        type = list(
+      all_categorical() ~ "categorical"
+    ),
+    label = list(
+age_group ~ "Age at 1L Treatment",
+ gender ~ "Birth Sex",
+combined_ecog ~ "ECOG Performance Status",
+ issstage ~ "ISS Stage",
+ asct ~ "ASCT",
+ year_diag_group ~ "Year of Diagnosis",
+ practicetype ~ "Site of Care",
+ sesindex2015_2019 ~ "SES Quintile",
+Ploidy ~ "Ploidy",
+ `Deletion 13q` ~ "Deletion 13q",
+ Anemia ~ "Anemia",
+`Renal Insufficieny` ~ "Renal Insufficiency",
+ Hypercalcemia ~ "Hypercalcemia",
+`Cytogenetic Risk Groups` ~ "Cytogenetic Risk Groups"
+),
+    statistic = list(all_continuous() ~ "Mean: {mean} ({sd}), Median: {median} [{min}, {max}]",
+                     all_categorical() ~ "{n} ({p}%)",
+                       combined_race_ethnicity ~ "{n}({p}%)"),
+    digits = list(
+                  all_categorical() ~ c(0, 1))
+  ) %>%   add_difference(everything() ~ "smd") %>% 
+  add_p(
+     test = list(
+       all_categorical() ~ "chisq.test"
+     ),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+   ) %>% add_overall() %>%
+  modify_column_hide(ci)
+
+
+table_all_vars_other
+
+library(gt)
+table_all_vars_other<- table_all_vars_other%>%
+  as_gt() %>%
+  tab_options(table.font.size = pct(60)) 
+saveRDS(table_all_vars_other, "stats_other.rds")
+
+
+# table1 <- CreateTableOne(vars = vars, strata = "combined_race_ethnicity", data = all_varsofinterest_aa)
+# print(table1, smd = TRUE)
+```
+### White vs. Unknown
+```{r}
+# Subset the data to two groups only
+all_varsofinterest_unknown <- all_varsofinterest %>%
+filter(combined_race_ethnicity %in% c("White", "Unknown/Missing"))
+
+# Make sure White is the reference
+all_varsofinterest_unknown <- all_varsofinterest_unknown %>%
+mutate(combined_race_ethnicity = factor(combined_race_ethnicity, levels = c("White", "Unknown/Missing")))
+
+table_all_vars_unknown <- all_varsofinterest_unknown %>% 
+  tbl_summary(
+    by = combined_race_ethnicity, # group by combined_race_ethnicity if needed
+        type = list(
+      all_categorical() ~ "categorical"
+    ),
+    label = list(
+age_group ~ "Age at 1L Treatment",
+ gender ~ "Birth Sex",
+combined_ecog ~ "ECOG Performance Status",
+ issstage ~ "ISS Stage",
+ asct ~ "ASCT",
+ year_diag_group ~ "Year of Diagnosis",
+ practicetype ~ "Site of Care",
+ sesindex2015_2019 ~ "SES Quintile",
+Ploidy ~ "Ploidy",
+ `Deletion 13q` ~ "Deletion 13q",
+ Anemia ~ "Anemia",
+`Renal Insufficieny` ~ "Renal Insufficiency",
+ Hypercalcemia ~ "Hypercalcemia",
+`Cytogenetic Risk Groups` ~ "Cytogenetic Risk Groups"
+),
+    statistic = list(all_continuous() ~ "Mean: {mean} ({sd}), Median: {median} [{min}, {max}]",
+                     all_categorical() ~ "{n} ({p}%)",
+                       combined_race_ethnicity ~ "{n}({p}%)"),
+    digits = list(
+                  all_categorical() ~ c(0, 1))
+  ) %>%   add_difference(everything() ~ "smd") %>% 
+  add_p(
+     test = list(
+       all_categorical() ~ "chisq.test"
+     ),
+    pvalue_fun = function(x) style_pvalue(x, digits = 3)
+   ) %>% add_overall() %>%
+  modify_column_hide(ci)
+
+
+table_all_vars_unknown
+
+library(gt)
+table_all_vars_unknown<- table_all_vars_unknown%>%
+  as_gt() %>%
+  tab_options(table.font.size = pct(60)) 
+saveRDS(table_all_vars_unknown, "stats_unknown.rds")
+
+
+# table1 <- CreateTableOne(vars = vars, strata = "combined_race_ethnicity", data = all_varsofinterest_aa)
+# print(table1, smd = TRUE)
+```
+
+# Creating a SMD table
+```{r}
+# Load necessary libraries
+library(tableone)
+library(dplyr)
+library(gt)
+
+# Define covariates
+
+vars <- c( "gender", "age_group", "combined_ecog", "issstage", "asct", "Cytogenetic Risk Groups", "sesindex2015_2019","year_diag_group", "Anemia","Hypercalcemia",
+          "Renal Insufficieny","practicetype",
+         "Deletion 13q", "Ploidy")
+
+# AA
+df <- all_varsofinterest %>%
+filter(combined_race_ethnicity %in% c("White", "African American")) %>%
+mutate(combined_race_ethnicity = factor(combined_race_ethnicity, levels = c("White", "African American")))
+a <- CreateTableOne(vars = vars, strata = "combined_race_ethnicity", data = df, test = FALSE)
+smd_aa <- ExtractSmd(a)
+
+# Asian
+df <- all_varsofinterest %>%
+filter(combined_race_ethnicity %in% c("White", "Asian")) %>%
+mutate(combined_race_ethnicity = factor(combined_race_ethnicity, levels = c("White", "Asian")))
+a <- CreateTableOne(vars = vars, strata = "combined_race_ethnicity", data = df, test = FALSE)
+smd_asian <- ExtractSmd(a)
+
+# HL
+df <- all_varsofinterest %>%
+filter(combined_race_ethnicity %in% c("White", "Hispanic or Latino")) %>%
+mutate(combined_race_ethnicity = factor(combined_race_ethnicity, levels = c("White", "Hispanic or Latino")))
+a <- CreateTableOne(vars = vars, strata = "combined_race_ethnicity", data = df, test = FALSE)
+smd_hl <- ExtractSmd(a)
+
+# other
+df <- all_varsofinterest %>%
+filter(combined_race_ethnicity %in% c("White", "Other Races")) %>%
+mutate(combined_race_ethnicity = factor(combined_race_ethnicity, levels = c("White", "Other Races")))
+a <- CreateTableOne(vars = vars, strata = "combined_race_ethnicity", data = df, test = FALSE)
+smd_other <- ExtractSmd(a)
+
+# unknown
+df <- all_varsofinterest %>%
+filter(combined_race_ethnicity %in% c("White", "Unknown/Missing")) %>%
+mutate(combined_race_ethnicity = factor(combined_race_ethnicity, levels = c("White", "Unknown/Missing")))
+a <- CreateTableOne(vars = vars, strata = "combined_race_ethnicity", data = df, test = FALSE)
+smd_unknown <- ExtractSmd(a)
+# Convert to data frame and rename columns
+smd_aa <- as.data.frame(smd_aa) %>% tibble::rownames_to_column("Variable") %>%
+rename(`White vs. AA` = "1 vs 2")
+
+smd_asian <- as.data.frame(smd_asian) %>% tibble::rownames_to_column("Variable") %>%
+rename(`White vs. Asian` = "1 vs 2")
+
+smd_hl <- as.data.frame(smd_hl) %>% tibble::rownames_to_column("Variable") %>%
+rename(`White vs. HL` = "1 vs 2")
+
+smd_other <- as.data.frame(smd_other) %>% tibble::rownames_to_column("Variable") %>%
+rename(`White vs. Other Races` = "1 vs 2")
+
+smd_unknown <- as.data.frame(smd_unknown) %>% tibble::rownames_to_column("Variable") %>%
+rename(`White vs. Unknown/Missing` = "1 vs 2")
+
+# Merge all by "Variable"
+summary_smd_table <- smd_aa %>%
+full_join(smd_asian, by = "Variable") %>%
+full_join(smd_hl, by = "Variable") %>%
+full_join(smd_other, by = "Variable") %>%
+full_join(smd_unknown, by = "Variable")
+
+summary_smd_table <- summary_smd_table %>%
+mutate(
+Variable = recode(Variable,
+age_group = "Age at 1L Treatment",
+gender = "Sex at Birth",
+combined_ecog = "ECOG Performance Status",
+issstage = "ISS Stage",
+asct = "ASCT",
+year_diag_group = "Year of Diagnosis",
+practicetype = "Site of Care",
+sesindex2015_2019 = "SES Quintile",
+Ploidy = "Ploidy",
+`Deletion 13q` = "Deletion 13q",
+Anemia = "Anemia",
+`Renal Insufficieny` = "Renal Insufficiency",
+Hypercalcemia = "Hypercalcemia",
+`Cytogenetic Risk Groups` = "Cytogenetic Risk Groups"
+)
+)
+
+# Define your desired order
+desired_order <- c(
+"Age at 1L Treatment",
+"Sex at Birth",
+"ECOG Performance Status",
+"ISS Stage",
+"ASCT",
+"Year of Diagnosis",
+"Site of Care",
+"SES Quintile",
+"Ploidy",
+"Deletion 13q",
+"Anemia",
+"Renal Insufficiency",
+"Hypercalcemia",
+"Cytogenetic Risk Groups"
+)
+
+# Convert Variable column to a factor with specified levels
+summary_smd_table <- summary_smd_table %>%
+mutate(Variable = factor(Variable, levels = desired_order)) %>%
+arrange(Variable) # ensures display order follows the factor levels
+
+# Then display or save as usual
+a <- gt(summary_smd_table) %>%
+fmt_number(columns = where(is.numeric), decimals = 2) %>% tab_source_note(source_note = "Table 1. SMDs comparing White patients to other race/ethnicity groups in the original dataset")%>% tab_options(source_notes.font.size = px(14) )
+
+# tab_header(title =Table 1. SMDs comparing White patients to other race/ethnicity groups in the original dataset)
+
+# Save as RDS
+saveRDS(a, "smd_original_dat.rds")
+
+
+```
+
+```{r}
+plot1 <- readRDS("smd_original_dat.rds")
+plot1
+
+library(gtsummary)
+gtsave(plot1,"table_smd.png")
+```
+
+Figure 1 Table of SMDs comparing White patients to other race/ethnicity groups (including those with Unknown/Missing race/ethnicity) in the complete case dataset.
+
+#Endpoints calculation
+##Overall survival
+```{r}
+# last known alive date from lab data
+data_last_alive_lab <- lab %>% group_by(patientid) %>% filter(testdate == max(testdate)) %>% ungroup() %>% distinct(patientid, testdate) %>% select(patientid, testdate)
+
+# last alive date from lineoftherapy
+lineoftherapy_alive <- lineoftherapy_2 %>% group_by(patientid) %>% filter(enddate == max(enddate)) %>% ungroup() %>% distinct(patientid, enddate) %>% select(patientid, enddate)
+
+# join two datasets
+full_joined <- merge(data_last_alive_lab, lineoftherapy_alive, by = "patientid",
+                     all = TRUE)
+
+full_joined <- full_joined %>% mutate(max_date = pmax(testdate, enddate, na.rm = TRUE))
+
+# join death data
+outcome_data <- datt %>% left_join(enhanced_mortality_v2, by = "patientid")
+
+# join last alive date - censor data
+outcome_data <- outcome_data %>% left_join(select(full_joined, max_date,patientid),  by = "patientid")
+outcome_data <- outcome_data %>% rename(last_known_alivedate = max_date) ## could be later than death date
+
+# 2L startdate
+lineoftherapy_2L_only <- lineoftherapy_2 %>% filter(linenumber ==2)
+lineoftherapy_2L_only <- lineoftherapy_2L_only %>% rename(linestartdate_2L = linestartdate)
+
+lineoftherapy_2L_only_2 <- lineoftherapy_2L_only %>% group_by(patientid) %>%
+  filter(linestartdate_2L == min(linestartdate_2L)) %>% ungroup()
+
+outcome_data <- outcome_data %>% left_join(select(lineoftherapy_2L_only_2, patientid,
+                                                  linestartdate_2L), by="patientid")
+
+
+
+# # Function to parse inconsistent dates
+# parse_inconsistent_date <- function(date) {
+#   if (grepl("-", date)) {
+#     if (nchar(date) == 7) {
+#       # Year-month format (YYYY-MM)
+#       return(as.Date(paste0(date, "-01")))
+#     } else if (nchar(date) == 10) {
+#       # Full date format (YYYY-MM-DD)
+#       return(as.Date(date))
+#     }
+#   } else if (nchar(date) == 4) {
+#     # Year only format (YYYY)
+#     return(as.Date(paste0(date, "-01-01")))
+#   }
+#   return(NA)
+# }
+
+
+
+parse_inconsistent_date <- function(date)
+{ if (is.na(date)) { return(NA) 
+  } else if (nchar(date) == 4) { return(as.Date(paste0(date, "-01-01"), format = "%Y-%m-%d")) } else if (nchar(date) == 7) { return(as.Date(paste0(date, "-01"), format = "%Y-%m-%d")) } else { return(as.Date(date, format = "%Y-%m-%d")) } }
+  
+# 
+# # Ensure all date columns are in Date format 
+# outcome_data <- outcome_data %>% mutate( 
+#   across( 
+#     c(dateofdeath), 
+#     ~ case_when( 
+#       is.na(.) ~ NA_Date_, 
+#       nchar(as.character(.)) == 10 ~ as.Date(., format = "%Y-%m-%d"),
+#       TRUE ~ as.Date(., format = "%Y/%m/%d")  ) ) )
+
+# Apply the function to the inconsistent_date column
+outcome_data <- outcome_data %>%
+  mutate(dateofdeath = ifelse(is.na(dateofdeath), NA, sapply(dateofdeath, parse_inconsistent_date)))
+
+# outcome_data <- outcome_data %>% mutate(dateofdeath = ifelse(is.na(dateofdeath), NA, sapply(dateofdeath, function(x) { { parse_inconsistent_date(x) } })))
+
+# Convert consistent_date column to Date format
+# outcome_data <-outcome_data  %>%
+#   mutate(dateofdeath = as.Date(dateofdeath))
+
+# Assuming your data frame is `data`
+# Ensure all date columns are in Date format
+outcome_data <- outcome_data %>%
+  mutate(across(c(dateofdeath, diagnosisdate, last_known_alivedate, linestartdate),
+                ~ as.Date(.x, format = "%Y-%m-%d")))
+
+
+```
+
+1. Overall Survival Data Creation
+```{r}
+library(survival)
+# install.packages("survminer")
+library(survminer)
+
+# Calculate OS
+os_data <- outcome_data %>%
+  mutate(OS = if_else(is.na(dateofdeath),
+                      as.numeric(last_known_alivedate - diagnosisdate)/365*12,
+                      as.numeric(dateofdeath - diagnosisdate)/365*12),
+         event = if_else(is.na(dateofdeath), 0, 1)) # death date - unknown -censor
+
+write.csv(os_data, "os_data.csv", row.names = FALSE)
+
+
+```
+
+
+##TDTT: Time from diagnosis to 1L treatment start
+```{r}
+# Calculate TDTT
+tdtt_data <- outcome_data %>%
+  mutate(TDTT = as.numeric(linestartdate - diagnosisdate),
+         event = if_else(is.na(linestartdate), 0, 1)
+         )
+
+write.csv(tdtt_data, "tdtt_data.csv", row.names = FALSE)
+
+```
+
+
+##TTNT: time from 1L treatment start to 2L start, censor at either death or last known alive date
+```{r}
+# outcome_data <- outcome_data %>% filter(yearofdiagnosis < 2019)
+# Calculate TTNT and censoring status
+ttnt_data <- outcome_data %>%
+  mutate(
+    # Calculate TTNT in days
+    TTNT_days = pmin(
+      if_else(is.na(linestartdate_2L), Inf, as.numeric(linestartdate_2L - linestartdate)),
+      if_else(is.na(dateofdeath), Inf, as.numeric(dateofdeath - linestartdate)),
+      if_else(is.na(last_known_alivedate), Inf, as.numeric(last_known_alivedate - linestartdate))
+    ),
+    # Convert TTNT from days to months
+    TTNT_months = TTNT_days / 365*12,
+    # Define censoring status
+    censored = if_else(!is.na(linestartdate_2L) & TTNT_days == as.numeric(linestartdate_2L - linestartdate), 0, 1)
+  ) %>% mutate(TTNT_months = ifelse(TTNT_months < 0, 0, TTNT_months))
+
+# Replace Inf with NA for proper handling in survival analysis
+ttnt_data$TTNT_months[ttnt_data$TTNT_months == Inf] <- NA
+
+# Filter out rows with NA in TTNT_months if any exist
+ttnt_data <- ttnt_data %>%
+  filter(!is.na(TTNT_months))
+
+write.csv(ttnt_data, "ttnt_data.csv", row.names = FALSE)
+
+
+```
+
+```{r}
+# 1. Patients who died BEFORE starting 2L treatment (with known 2L date)
+died_before_2L <- ttnt_data %>%
+filter(!is.na(dateofdeath),
+!is.na(linestartdate_2L),
+dateofdeath < linestartdate_2L)
+# DO NOT mention this, this is data discrepency
+
+# Count them
+n_died_before_2L <- nrow(died_before_2L)
+print(paste("Number of patients who died before starting 2L:", n_died_before_2L))
+
+# 2. Patients who died and NEVER started 2L (2L start date is missing)
+died_without_2L <- ttnt_data  %>%
+filter(!is.na(dateofdeath), !is.na(linestartdate),
+is.na(linestartdate_2L)) %>% group_by(combined_race_ethnicity) %>% summarise(n =n())
+
+# Count them
+n_died_without_2L <- nrow(died_without_2L)
+print(paste("Number of patients who died and never started 2L:", n_died_without_2L))
+
+# 3. Patients who were censored without death and no 2L (for context)
+censored_without_2L <- ttnt_data  %>%
+filter(is.na(dateofdeath),
+is.na(linestartdate_2L))
+
+n_censored_without_2L <- nrow(censored_without_2L)
+print(paste("Number of patients censored before 2L (not dead, no 2L):", n_censored_without_2L))
+```
+
+## Comepeting risk of death
+```{r}
+cr_tntt_data <- outcome_data %>%
+mutate(
+# Calculate TTNT days
+TTNT_days = pmin(
+ifelse(is.na(linestartdate_2L), Inf, as.numeric(linestartdate_2L - linestartdate)),
+ifelse(is.na(dateofdeath), Inf, as.numeric(dateofdeath - linestartdate)),
+ifelse(is.na(last_known_alivedate), Inf, as.numeric(last_known_alivedate - linestartdate))
+),
+# Convert to months
+TTNT_months = TTNT_days / (365 * 12),
+
+# Create fstatus (event indicator for competing risks)
+# 1 = received 2L treatment
+# 2 = died before 2L
+# 0 = censored (still alive without 2L)
+fstatus = case_when(
+!is.na(linestartdate_2L) ~ 1, # Received 2L
+is.na(linestartdate_2L) & !is.na(dateofdeath) ~ 2, # Died before 2L
+TRUE ~ 0 # Still alive without 2L
+)
+) %>%
+# Remove patients with missing TTNT time (if any)
+filter(!is.na(TTNT_months))
+
+# View new dataset
+head(cr_tntt_data)
+
+# Save if you want
+write.csv(cr_tntt_data, "cr_ttnt_data.csv", row.names = FALSE)
+
+```
+```{r}
+# Create new event status combining event 1 and 2
+cr_ttnt_data_combined <- cr_tntt_data  %>%
+mutate(fstatus_combined = case_when(
+fstatus %in% c(1, 2) ~ 1, # either received 2L or died = event occurred
+fstatus == 0 ~ 0 # still alive without 2L = censored
+))
+
+# Check first few rows
+head(cr_ttnt_data_combined)
+write.csv(cr_ttnt_data_combined, "cr_ttnt_data_combined.csv", row.names = FALSE)
+
+```
+
+
+```{r}
+# Load libraries
+library(survival)
+library(survminer)
+
+# Make sure your data is loaded
+head(cr_ttnt_data_combined)
+
+# Create the survival object
+surv_obj <- Surv(cr_ttnt_data_combined$TTNT_months, cr_ttnt_data_combined$fstatus)
+
+# Fit the Kaplan-Meier model
+km_fit <- survfit(surv_obj ~ 1) # no grouping, overall curve
+
+# Plot the KM curve
+ggsurvplot(km_fit,
+data = cr_ttnt_data_combined,
+xlab = "Time to Next Treatment (months)",
+ylab = "Survival Probability",
+conf.int = TRUE,
+risk.table = TRUE)
+
+```
+```{r}
+ttnt_data <- cr_ttnt_data_combined
+# match each race/ethnicity group separately
+aa_data <- ttnt_data %>% filter(combined_race_ethnicity %in% c("White", "African American" ))
+aa_data <- aa_data %>% mutate(treatment = ifelse(combined_race_ethnicity == "White",0,1))
+
+counts <- aa_data %>%
+  group_by(combined_race_ethnicity) %>%
+  summarise(count = n()); counts
+
+# results 
+crude <-coxph(Surv(TTNT_months, fstatus_combined)~ as.factor(treatment), data = aa_data)
+a  <- summary(crude)
+
+crude_results <- data.frame( Variable = "as.factor(treatment)1", 
+                             HR = exp(coef(a)[1]), 
+                             Lower_CI = exp(confint(crude)["as.factor(treatment)1", 1]), 
+                             Upper_CI = exp(confint(crude)["as.factor(treatment)1", 2]), 
+                             p_value = coef(a)["as.factor(treatment)1", 5] ) 
+# Print results 
+print(crude_results) 
+```
+# SMD calculations - example
+
+```{r}
+# White vs. AA - Sex
+p1 <- 0.424
+p2 <- 0.55
+
+d <- (p1 - p2) / sqrt((
+  p1*(1-p1) + p2*(1-p2)
+)/2); d
+
+# White vs. AA - Age
+p1 <- 0.326
+p2 <- 0.434
+
+d <- (p1 - p2) / sqrt((
+  p1*(1-p1) + p2*(1-p2)
+)/2); d
+```
+```{r}
+# White vs AA - ISS stage
+p11 <- 0.19
+p12 <- 0.209
+p13 <- 0.231
+p14 <- 0.37
+
+p21 <- 0.209
+p22 <- 0.194
+p23 <- 0.186
+p24 <- 0.412
+  
+# Input treatment and control proportions for categories A, B, AB, O
+treatment <- c(p11, p12, p13, p14)
+control <- c(p21, p22, p23, p24)
+
+# Keep only first k-1 (A, B, AB)
+treat_star <- treatment[1:3]
+control_star <- control[1:3]
+
+# Calculate difference vector
+D <- treat_star - control_star
+
+# Build S matrix
+S <- matrix(0, nrow = 3, ncol = 3)
+
+for (k in 1:3) {
+S[k, k] <- (treatment[k] * (1 - treatment[k]) + control[k] * (1 - control[k]))/2
+}
+
+for (k in 1:3) {
+for (l in 1:3) {
+if (k != l) {
+S[k, l] <-  (treatment[k] * treatment[l] + control[k] * control[l])/2
+}
+}
+}
+
+# Calculate standardized difference
+d_squared <- t(D) %*% solve(S) %*% D
+d <- sqrt(d_squared)
+
+cat("Standardized difference (d):", d, "\n")
+```
+
+```{r}
+# White vs AA - cytogenetic risk group
+p11 <- 0.086
+p12 <- 0.056
+p13 <- 0.081
+p14 <- 0.777
+
+p21 <- 0.084
+p22 <- 0.052
+p23 <- 0.093
+p24 <- 0.771
+  
+# Input treatment and control proportions for categories A, B, AB, O
+treatment <- c(p11, p12, p13, p14)
+control <- c(p21, p22, p23, p24)
+
+# Keep only first k-1 (A, B, AB)
+treat_star <- treatment[1:3]
+control_star <- control[1:3]
+
+# Calculate difference vector
+D <- treat_star - control_star
+
+# Build S matrix
+S <- matrix(0, nrow = 3, ncol = 3)
+
+for (k in 1:3) {
+S[k, k] <- (treatment[k] * (1 - treatment[k]) + control[k] * (1 - control[k]))/2
+}
+
+for (k in 1:3) {
+for (l in 1:3) {
+if (k != l) {
+S[k, l] <-  (treatment[k] * treatment[l] + control[k] * control[l])/2
+}
+}
+}
+
+# Calculate standardized difference
+d_squared <- t(D) %*% solve(S) %*% D
+d <- sqrt(d_squared)
+
+cat("Standardized difference (d):", d, "\n")
+```
+
+```{r}
+# White vs AA - deletion 13q
+p11 <- 0.218
+p12 <- 0.214
+p13 <- 0.568
+
+p21 <- 0.189
+p22 <- 0.251
+p23 <- 0.56
+  
+# Input treatment and control proportions for categories A, B, AB, O
+treatment <- c(p11, p12, p13)
+control <- c(p21, p22, p23)
+
+# Keep only first k-1 (A, B, AB)
+treat_star <- treatment[1:2]
+control_star <- control[1:2]
+
+# Calculate difference vector
+D <- treat_star - control_star
+
+# Build S matrix
+S <- matrix(0, nrow = 2, ncol = 2)
+
+for (k in 1:2) {
+S[k, k] <- (treatment[k] * (1 - treatment[k]) + control[k] * (1 - control[k]))/2
+}
+
+for (k in 1:2) {
+for (l in 1:2) {
+if (k != l) {
+S[k, l] <-  (treatment[k] * treatment[l] + control[k] * control[l])/2
+}
+}
+}
+
+# Calculate standardized difference
+d_squared <- t(D) %*% solve(S) %*% D
+d <- sqrt(d_squared)
+
+cat("Standardized difference (d):", d, "\n")
+```
+
+```{r}
+# White vs AA - ASCT
+p11 <- 0.326
+p12 <- 0.674
+
+p21 <- 0.266
+p22 <- 0.734
+
+# Input treatment and control proportions for categories A, B, AB, O
+treatment <- c(p11, p12)
+control <- c(p21, p22)
+
+# Keep only first k-1 (A, B, AB)
+treat_star <- treatment[1:1]
+control_star <- control[1:1]
+
+# Calculate difference vector
+D <- treat_star - control_star
+
+# Build S matrix
+S <- matrix(0, nrow = 1, ncol = 1)
+
+for (k in 1:1) {
+S[k, k] <- (treatment[k] * (1 - treatment[k]) + control[k] * (1 - control[k]))/2
+}
+
+for (k in 1:1) {
+for (l in 1:1) {
+if (k != l) {
+S[k, l] <-  (treatment[k] * treatment[l] + control[k] * control[l])/2
+}
+}
+}
+
+# Calculate standardized difference
+d_squared <- t(D) %*% solve(S) %*% D
+d <- sqrt(d_squared)
+
+cat("Standardized difference (d):", d, "\n")
+```
+
+```{r}
+# White vs AA - ecog
+p11 <- 0.512
+p12 <- 0.15
+p13 <- 0.338
+
+p21 <- 0.503
+p22 <- 0.158
+p23 <- 0.339
+  
+# Input treatment and control proportions for categories A, B, AB, O
+treatment <- c(p11, p12, p13)
+control <- c(p21, p22, p23)
+
+# Keep only first k-1 (A, B, AB)
+treat_star <- treatment[1:2]
+control_star <- control[1:2]
+
+# Calculate difference vector
+D <- treat_star - control_star
+
+# Build S matrix
+S <- matrix(0, nrow = 2, ncol = 2)
+
+for (k in 1:2) {
+S[k, k] <- (treatment[k] * (1 - treatment[k]) + control[k] * (1 - control[k]))/2
+}
+
+for (k in 1:2) {
+for (l in 1:2) {
+if (k != l) {
+S[k, l] <-  (treatment[k] * treatment[l] + control[k] * control[l])/2
+}
+}
+}
+
+# Calculate standardized difference
+d_squared <- t(D) %*% solve(S) %*% D
+d <- sqrt(d_squared)
+
+cat("Standardized difference (d):", d, "\n")
+```
+
+```{r}
+# White vs AA - year of diagnosis
+p11 <- 0.237
+p12 <- 0.422
+p13 <- 0.341
+
+p21 <- 0.215
+p22 <- 0.395
+p23 <- 0.39
+  
+# Input treatment and control proportions for categories A, B, AB, O
+treatment <- c(p11, p12, p13)
+control <- c(p21, p22, p23)
+
+# Keep only first k-1 (A, B, AB)
+treat_star <- treatment[1:2]
+control_star <- control[1:2]
+
+# Calculate difference vector
+D <- treat_star - control_star
+
+# Build S matrix
+S <- matrix(0, nrow = 2, ncol = 2)
+
+for (k in 1:2) {
+S[k, k] <- (treatment[k] * (1 - treatment[k]) + control[k] * (1 - control[k]))/2
+}
+
+for (k in 1:2) {
+for (l in 1:2) {
+if (k != l) {
+S[k, l] <-  (treatment[k] * treatment[l] + control[k] * control[l])/2
+}
+}
+}
+
+# Calculate standardized difference
+d_squared <- t(D) %*% solve(S) %*% D
+d <- sqrt(d_squared)
+
+cat("Standardized difference (d):", d, "\n")
+```
+
+```{r}
+# White vs AA - ses
+p11 <- 0.08
+p12 <- 0.148
+p13 <- 0.189
+p14 <- 0.233
+p15 <- 0.254
+
+
+p21 <- 0.311
+p22 <- 0.177
+p23 <- 0.164
+p24 <- 0.155
+p25 <- 0.1
+  
+# Input treatment and control proportions for categories A, B, AB, O
+treatment <- c(p11, p12, p13, p14, p15)
+control <- c(p21, p22, p23, p24, p25)
+
+# Keep only first k-1 (A, B, AB)
+treat_star <- treatment[1:5]
+control_star <- control[1:5]
+
+# Calculate difference vector
+D <- treat_star - control_star
+
+# Build S matrix
+S <- matrix(0, nrow = 5, ncol = 5)
+
+for (k in 1:5) {
+S[k, k] <- (treatment[k] * (1 - treatment[k]) + control[k] * (1 - control[k]))/2
+}
+
+for (k in 1:5) {
+for (l in 1:5) {
+if (k != l) {
+S[k, l] <-  (treatment[k] * treatment[l] + control[k] * control[l])/2
+}
+}
+}
+
+# Calculate standardized difference
+d_squared <- t(D) %*% solve(S) %*% D
+d <- sqrt(d_squared)
+
+cat("Standardized difference (d):", d, "\n")
+```
+
+
+```{r}
+# White vs AA - deletion 13q
+p11 <- 0.165
+p12 <- 0.06
+p13 <- 0.775
+
+p21 <- 0.153
+p22 <- 0.065
+p23 <- 0.782
+  
+# Input treatment and control proportions for categories A, B, AB, O
+treatment <- c(p11, p12, p13)
+control <- c(p21, p22, p23)
+
+# Keep only first k-1 (A, B, AB)
+treat_star <- treatment[1:2]
+control_star <- control[1:2]
+
+# Calculate difference vector
+D <- treat_star - control_star
+
+# Build S matrix
+S <- matrix(0, nrow = 2, ncol = 2)
+
+for (k in 1:2) {
+S[k, k] <- (treatment[k] * (1 - treatment[k]) + control[k] * (1 - control[k]))/2
+}
+
+for (k in 1:2) {
+for (l in 1:2) {
+if (k != l) {
+S[k, l] <-  (treatment[k] * treatment[l] + control[k] * control[l])/2
+}
+}
+}
+
+# Calculate standardized difference
+d_squared <- t(D) %*% solve(S) %*% D
+d <- sqrt(d_squared)
+
+cat("Standardized difference (d):", d, "\n")
+```
+
