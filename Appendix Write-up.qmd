@@ -1,0 +1,234 @@
+---
+title: "Supplementary Material"
+format: 
+  pdf:
+    number-sections: true
+    fontsize: 11pt
+    include-in-header: 
+      text: |
+        \usepackage{pdfpages}
+editor: visual
+---
+
+```{=tex}
+\section*{List of Supplementary Tables}
+```
+**Supplementary Table 1** SMDs comparing White patients to race/ethnicity groups in the original dataset. \newline
+
+**Supplementary Table 2.1** Sample size and proportions retained across PS methods for White and AA. \newline
+
+**Supplementary Table 2.2** Sample size and proportions retained across PS methods for White and Asian. \newline
+
+**Supplementary Table 2.3** Sample size and proportions retained across PS methods for White and HL. \newline
+
+**Supplementary Table 2.4** Sample size and proportions retained across PS methods for White and Other Races.
+
+
+
+
+```{=tex}
+\newpage
+\section*{List of Supplementary Figures}
+```
+**Supplementary Figure 1.1** Proportion of covariates with SMD $\geq$ 0.1 between White and Asian patients across PS methods. \newline
+
+**Supplementary Figure 1.2** Proportion of covariates with SMD $\geq$ 0.1 between White and AA patients across PS methods. \newline
+
+**Supplementary Figure 1.3** Proportion of covariates with SMD $\geq$ 0.1 between White and HL patients across PS methods. \newline
+
+**Supplementary Figure 1.4** Proportion of covariates with SMD $\geq$ 0.1 between White and Other Races patients across PS methods. \newline
+
+**Supplementary Figure 2.1** HRs & 95% CIs for OS comparing White and AA using complete case and imputed data analyses. \newline
+
+**Supplementary Figure 2.2** HRs & 95% CIs for OS comparing White and Asian using complete case and imputed data analyses. \newline
+
+**Supplementary Figure 2.3** HRs & 95% CIs for OS comparing White and HL using complete case and imputed data analyses. \newline
+
+**Supplementary Figure 2.4** HRs & 95% CIs for OS comparing White and Other Races using complete case and imputed data analyses. \newline
+
+**Supplementary Figure 3.1** HRs & 95% CIs for TTNT comparing White and AA using complete case and imputed data analyses. \newline
+
+**Supplementary Figure 3.2** HRs & 95% CIs for TTNT comparing White and Asian using complete case and imputed data analyses. \newline
+
+**Supplementary Figure 3.3** HRs & 95% CIs for TTNT comparing White and HL using complete case and imputed data analyses. \newline
+
+**Supplementary Figure 3.4** HRs & 95% CIs for TTNT comparing White and Other Races using complete case and imputed data analyses.
+
+
+{{< pagebreak >}}
+
+# Supplementary Tables 
+
+![](table_smd.png)
+**Supplementary Table 1** SMDs comparing White patients to race/ethnicity groups in the original dataset.
+\newpage
+
+```{r, echo=FALSE}
+table1 <- readRDS("African American_sample loss.rds") 
+table1
+```
+
+**Supplementary Table 2.1** Sample size and proportions retained across PS methods for White and AA.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r, echo=FALSE}
+table2 <- readRDS("Asian_sample loss.rds") 
+table2 
+```
+
+**Supplementary Table 2.2** Sample size and proportions retained across PS methods for White and Asian.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+
+```{r, echo=FALSE}
+table3 <- readRDS("Hispanic or Latino_sample loss.rds") 
+table3 
+```
+
+**Supplementary Table 2.3** Sample size and proportions retained across PS methods for White and HL.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+\newpage
+
+```{r, echo=FALSE}
+table4 <- readRDS("Other Races_sample loss.rds") 
+table4
+```
+
+**Supplementary Table 2.4** Sample size and proportions retained across PS methods for White and Other Races.
+
+**Supplementary Table 3** Imputed values to each race/ethnicity group.
+
+
+\newpage
+
+# Supplementary Figures
+
+## SMDs
+
+![](Asian_combined_panel.png)
+
+**Supplementary Figure 1.1** Proportion of covariates with SMD $\geq$ 0.1 between White and Asian patients across PS methods.
+
+{{< pagebreak >}}
+
+![](African%20American_combined_panel.png) 
+**Supplementary Figure 1.2** Proportion of covariates with SMD $\geq$ 0.1 between White and AA patients across PS methods.
+{{< pagebreak >}}
+
+![](Hispanic%20or%20Latino_combined_panel.png) 
+**Supplementary Figure 1.3** Proportion of covariates with SMD $\geq$ 0.1 between White and HL patients across PS methods.
+
+{{< pagebreak >}}
+
+![](Other%20Races_combined_panel.png) 
+**Supplementary Figure 1.4** Proportion of covariates with SMD $\geq$ 0.1 between White and Other Races patients across PS methods.
+
+{{< pagebreak >}}
+
+## OS Analysis
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("African American_comparison")
+plot1
+
+```
+
+**Supplementary Figure 2.1** HRs & 95% CIs for OS comparing White and AA using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("Asian_comparison")
+plot1
+```
+
+**Supplementary Figure 2.2** HRs & 95% CIs for OS comparing White and Asian using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+
+plot1 <- readRDS("Hispanic or Latino_comparison")
+plot1
+```
+
+**Supplementary Figure 2.3** HRs & 95% CIs for OS comparing White and HL using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("Other Races_comparison")
+plot1
+```
+
+**Supplementary Figure 2.4** HRs & 95% CIs for OS comparing White and Other Races using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+## TTNT Analysis
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("African American_comparison_ttnt")
+plot1
+```
+
+**Supplementary Figure 3.1** HRs & 95% CIs for TTNT comparing White and AA using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("Asian_comparison_ttnt")
+plot1
+
+```
+
+**Supplementary Figure 3.2** HRs & 95% CIs for TTNT comparing White and Asian using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("Hispanic or Latino_comparison_ttnt")
+plot1
+```
+
+**Supplementary Figure 3.3** HRs & 95% CIs for TTNT comparing White and HL using complete case and imputed data analyses.
+
+::: {=latex}
+\vspace{1cm}
+:::
+
+```{r,warning=FALSE, echo=FALSE, fig.width=8}
+plot1 <- readRDS("Other Races_comparison_ttnt")
+plot1
+
+```
+
+**Supplementary Figure 3.4** HRs & 95% CIs for TTNT comparing White and Other Races using complete case and imputed data analyses.
+
+\newpage
+
+# Data Availability
+
+The data supporting the findings of this thesis were provided by Flatiron Health, Inc. Data information and variable definition can be found in Flatiron Knowledge Center: https://flatiron.com/database-characterization.
